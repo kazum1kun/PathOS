@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="frame-src 'self' blob: data:; object-src 'none'; base-uri 'self'"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="light dark"><meta name="theme-color" content="#f4efe4" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#1a1814" media="(prefers-color-scheme: dark)"><meta name="description" content="Your ChoiceScript games, versions, and saves in one place."><link rel="manifest" href="./manifest.webmanifest"><link rel="icon" href="./icon.svg"><link rel="stylesheet" href="./style.css"><title>PathOS</title></head>
+<body>
+<header class="topbar"><a class="brand" href="./" aria-label="PathOS home"><img src="./icon.svg" alt=""><span class="wordmark" aria-hidden="true">Path<span>OS</span></span><span class="tagline">A place for every path.</span></a><nav aria-label="Main"><button id="backup" class="quiet">Export backup</button><button id="restore-backup" class="quiet">Restore backup</button><button id="help" class="quiet" aria-label="Help">Help</button></nav></header>
+<main>
+<section class="intro"><div><h1>Pick up your story.</h1><p class="lede">Bring your ChoiceScript games. Keep your choices through every update.</p></div><button id="import" class="primary">Import APK or ZIP</button></section>
+<div id="notice" role="status" aria-live="polite" hidden></div>
+<section class="workspace">
+<aside class="library"><div class="section-title"><h2>Library</h2><span id="game-count" class="count">0</span></div><label class="search"><span class="sr-only">Find a game</span><input id="search" type="search" placeholder="Find a game…"></label><div id="games" class="games"></div><div class="local-note"><strong>Stored on this device</strong><p>Games and saves stay in this browser. Export a backup to move them.</p></div></aside>
+<section id="detail" class="detail"><div class="empty"><svg class="fork" viewBox="0 0 120 100" aria-hidden="true"><path class="untaken" d="M60 62C60 44 26 42 22 18M60 62V18"/><path class="taken" d="M60 92V62C60 44 94 42 98 18"/><circle class="start" cx="60" cy="92" r="4"/><circle class="end" cx="22" cy="13" r="5"/><circle class="end" cx="60" cy="13" r="5"/><circle class="here" cx="98" cy="13" r="6"/></svg><h2>Your stories belong together.</h2><p>Import an APK that bundles a ChoiceScript game, or a ZIP of one. Every version and save stays together in your library.</p><button id="demo" class="secondary">Explore with a demo</button><small>No account needed, and nothing is uploaded.</small></div></section>
+</section>
+<footer><span>ChoiceScript reader &amp; save library</span><button id="storage-info" class="text-button">Check device storage</button></footer>
+</main>
+<section id="player" class="player" hidden aria-label="Game reader"><header class="player-toolbar"><button id="leave-player" class="quiet">← Library</button><div class="now-playing"><strong id="playing-title"></strong><span id="playing-version"></span></div><div class="reader-actions"><span id="save-status" role="status">Opening…</span><button id="save-now" class="secondary">Save snapshot</button></div></header><div id="runtime-status" role="status" hidden></div><div id="runtime"></div></section>
+<dialog id="modal"><div id="modal-body"></div></dialog>
+<input type="file" id="archive-file" accept=".apk,.zip,application/zip,application/vnd.android.package-archive" hidden><input type="file" id="backup-file" accept=".json,application/json" hidden><input type="file" id="save-file" accept=".json,application/json" hidden>
+<script type="module" src="./src/app.js"></script>
+<noscript><p>This app needs JavaScript to import games and keep saves.</p></noscript>
+</body></html>

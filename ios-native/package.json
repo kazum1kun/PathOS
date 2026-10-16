@@ -1,0 +1,19 @@
+{
+  "name": "pathos-ios",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Native iOS shell for the shared PathOS web app",
+  "scripts": {
+    "sync": "node scripts/check-web.mjs && cap sync ios",
+    "open": "cap open ios",
+    "verify": "node scripts/verify-project.mjs"
+  },
+  "dependencies": {
+    "@capacitor/core": "8.5.3",
+    "@capacitor/ios": "8.5.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.3"
+  },
+  "engines": { "node": ">=22" }
+}

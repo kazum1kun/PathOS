@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.DS_Store
+*.zip
+*.apk
+*.tar.gz
+ios-native/ios/App/Pods/
+ios-native/ios/App/build/
+ios-native/ios/App/App/public/
+ios-native/ios/App/App/capacitor.config.json
+ios-native/ios/App/App/config.xml
+**/xcuserdata/
+.openai/local/
