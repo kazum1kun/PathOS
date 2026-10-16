@@ -36,6 +36,33 @@ xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -sdk 
 
 After changing the shared web code, run `npm run build` in the project root and `npm run sync` in `ios-native/` before building again. Don't run `cap add ios` on this project: it creates a fresh platform folder without the custom Swift code.
 
+## Build on Codemagic
+
+The repository root includes [`codemagic.yaml`](../codemagic.yaml), following Codemagic's [Capacitor workflow](https://docs.codemagic.io/yaml-quick-start/building-an-ionic-app/). PathOS uses Capacitor and Swift Package Manager, so it doesn't need React Native, Expo, CocoaPods, or a generated Xcode workspace. The shared `App` scheme is checked into the Xcode project for CI builds.
+
+Commit and push the configuration, shared scheme, and documentation to the branch connected to Codemagic:
+
+```sh
+git add codemagic.yaml ios-native/ios/App/App.xcodeproj/xcshareddata/xcschemes/App.xcscheme README.md docs/ios.md
+git commit -m "Add Codemagic iOS workflows"
+git push
+```
+
+In Codemagic, select that branch and click **Check for configuration file**. Keep the working directory at the repository root. Both workflows install the two locked npm dependency sets, run the shared checks and tests, build `dist/`, sync Capacitor's generated assets and configuration, verify the native metadata, and resolve Swift packages. Generated web assets and native configuration don't need to be committed.
+
+Choose a workflow when starting a build:
+
+| Workflow | Output | Signing requirements |
+| --- | --- | --- |
+| `ios-simulator` | Simulator `App.app` and build log | None; use this for the first build. The app runs in a Mac's iOS Simulator. |
+| `ios-release` | Signed IPA, debug symbols, and build logs | Apple Distribution certificate and App Store provisioning profile for `com.swsoftworks.pathos` |
+
+For `ios-release`, open **Team settings → codemagic.yaml settings → Code signing identities** in Codemagic. Upload or generate an Apple Distribution certificate with its private key, and upload or fetch a matching App Store provisioning profile. Codemagic's [iOS signing guide](https://docs.codemagic.io/yaml-code-signing/signing-ios/) covers these steps. The workflow selects these signing files by bundle ID and distribution type; it doesn't need credentials in the repository.
+
+Download the IPA from the build's artifacts. The release workflow prepares an App Store/TestFlight IPA but doesn't upload it automatically. For installation on registered test devices instead, change `distribution_type` to `ad_hoc` and provide a matching Ad Hoc profile that includes those devices. A simulator app can't be installed on an iPhone.
+
+Release builds set `CURRENT_PROJECT_VERSION` to the Codemagic workflow's `BUILD_NUMBER + 1`. If you've already uploaded a higher build number elsewhere, adjust that value before uploading another release. Builds run manually; this configuration doesn't enable automatic builds on every push.
+
 ## Import and export
 
 Importing works the same way as on the website. The Import button opens the iOS file picker, so you can choose APK and ZIP files from the Files app. Nothing is installed as an Android app.

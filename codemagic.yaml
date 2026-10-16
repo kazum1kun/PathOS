@@ -1,0 +1,120 @@
+# PathOS web and Capacitor iOS builds. See docs/deployment.md and docs/ios.md.
+workflows:
+  ios-simulator:
+    name: PathOS iOS simulator
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment: &ios-environment
+      node: "22"
+      xcode: latest
+      vars:
+        XCODE_PROJECT: ios-native/ios/App/App.xcodeproj
+        XCODE_SCHEME: App
+    scripts:
+      - &install-dependencies
+        name: Install web and native dependencies
+        script: |
+          set -euo pipefail
+          npm ci
+          npm --prefix ios-native ci
+      - &check-web
+        name: Check and test the shared app
+        script: |
+          set -euo pipefail
+          npm run check
+          npm test
+      - &sync-native
+        name: Build web assets and sync Capacitor
+        script: |
+          set -euo pipefail
+          npm run build
+          npm --prefix ios-native run sync
+          npm --prefix ios-native run verify
+      - &resolve-packages
+        name: Resolve Swift packages
+        script: |
+          set -euo pipefail
+          xcodebuild -resolvePackageDependencies \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME"
+      - name: Build for iOS Simulator without signing
+        script: |
+          set -euo pipefail
+          mkdir -p build
+          xcodebuild build \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/ios/simulator \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee build/ios-simulator.log
+    artifacts:
+      - build/ios/simulator/Build/Products/Debug-iphonesimulator/App.app
+      - build/ios-simulator.log
+
+  ios-release:
+    name: PathOS signed iOS IPA
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      <<: *ios-environment
+      # Add a matching Apple Distribution certificate and App Store profile in
+      # Codemagic Team settings > codemagic.yaml settings > Code signing identities.
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.swsoftworks.pathos
+    scripts:
+      - *install-dependencies
+      - *check-web
+      - *sync-native
+      - *resolve-packages
+      - name: Apply signing profiles
+        script: |
+          set -euo pipefail
+          xcode-project use-profiles --project "$XCODE_PROJECT"
+      - name: Build signed IPA
+        script: |
+          set -euo pipefail
+          xcode-project build-ipa \
+            --project "$XCODE_PROJECT" \
+            --scheme "$XCODE_SCHEME" \
+            --config Release \
+            --archive-xcargs "CURRENT_PROJECT_VERSION=$((BUILD_NUMBER + 1))"
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - build/ios/xcarchive/**/*.dSYM
+      - /tmp/xcodebuild_logs/*.log
+
+  cloudflare-pages:
+    name: PathOS Cloudflare Pages
+    max_build_duration: 30
+    instance_type: linux_x2
+    environment:
+      node: "22"
+      groups:
+        # CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_PAGES_PROJECT
+        - cloudflare_pages
+    scripts:
+      - name: Check Cloudflare configuration
+        script: |
+          set -euo pipefail
+          : "${CLOUDFLARE_API_TOKEN:?Set CLOUDFLARE_API_TOKEN in the cloudflare_pages group}"
+          : "${CLOUDFLARE_ACCOUNT_ID:?Set CLOUDFLARE_ACCOUNT_ID in the cloudflare_pages group}"
+          : "${CLOUDFLARE_PAGES_PROJECT:?Set CLOUDFLARE_PAGES_PROJECT in the cloudflare_pages group}"
+          : "${CM_BRANCH:?Start this workflow from a repository branch}"
+      - name: Install web dependencies
+        script: npm ci
+      - *check-web
+      - name: Build static website
+        script: npm run build
+      # Keep deployment in scripts so it runs only after successful checks/build.
+      - name: Deploy to Cloudflare Pages
+        script: |
+          set -euo pipefail
+          npx --yes wrangler@4 pages deploy dist \
+            --project-name "$CLOUDFLARE_PAGES_PROJECT" \
+            --branch "$CM_BRANCH"
+    artifacts:
+      - dist/**

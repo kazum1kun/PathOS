@@ -13,6 +13,8 @@ python3 -m http.server 8000 --directory dist
 
 Open `http://localhost:8000`. For production, deploy `dist/` to a stable HTTPS address. Package inspection and gameplay happen entirely on the device, so there's no upload server to run. See [web deployment](docs/deployment.md).
 
+The `cloudflare-pages` workflow in [`codemagic.yaml`](codemagic.yaml) builds and deploys the website to Cloudflare Pages. See [Cloudflare setup](docs/deployment.md#cloudflare-pages-through-codemagic) for the required Codemagic variables.
+
 ## Build the iOS app
 
 On a Mac with Node.js 22+ and Xcode 26+:
@@ -27,6 +29,8 @@ npm run open
 ```
 
 In Xcode, choose your signing team and run the `App` scheme. The project targets iOS and iPadOS 15+. See [iOS build and verification](docs/ios.md). This repository contains the source and an Xcode project, not a signed IPA, and the app hasn't been tested on a real device yet.
+
+To build on Codemagic, use the root [`codemagic.yaml`](codemagic.yaml). It includes simulator and signed IPA workflows. See [Codemagic setup](docs/ios.md#build-on-codemagic) for signing requirements and first-build steps.
 
 ## Game updates
 
