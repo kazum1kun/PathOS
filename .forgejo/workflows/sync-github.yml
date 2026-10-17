@@ -1,0 +1,28 @@
+name: Sync main to GitHub
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: sync-github-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    # Use the label shown in Settings > Actions > Runners on your Forgejo instance.
+    runs-on: docker
+    container:
+      image: node:24-bookworm
+    timeout-minutes: 5
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Push main while preserving GitHub release tags
+        env:
+          GH_MIRROR_TOKEN: ${{ secrets.GH_MIRROR_TOKEN }}
+        run: node scripts/ci/sync-github.mjs

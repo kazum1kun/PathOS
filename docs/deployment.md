@@ -71,6 +71,19 @@ Nightly publishing uploads downloads to GitHub Releases. Use **Build web app** w
 
 GitHub runs schedules from the default branch and may delay scheduled jobs during busy periods. Public repositories' schedules can be disabled after 60 days without activity; re-enable **Publish nightly** in Actions if that happens. See [GitHub's scheduled workflow documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
 
+### Syncing from Forgejo without deleting the nightly tag
+
+Use [the Forgejo sync workflow](../.forgejo/workflows/sync-github.yml) to push `main` to `kazum1kun/PathOS` while keeping GitHub's release tags. Forgejo 16.0.5's built-in mirror still includes all tags even with a branch filter, as shown in its [push implementation](https://codeberg.org/forgejo/forgejo/src/tag/v16.0.5/services/mirror/mirror_push.go#L75-L97). A GitHub-only `nightly` tag can therefore disappear on the next mirror sync.
+
+1. In [kaze.moe repository settings](https://kaze.moe/kaz/PathOS/settings), open **Repository → Mirror Settings** and remove the existing GitHub push mirror. The Actions workflow replaces it.
+2. Enable **Settings → Units → Overview → Actions**, then check **Settings → Actions → Runners** for an online runner. The workflow uses the `docker` label and a Node 24 container. If your runner uses a different label, change `runs-on` in the workflow. If there are no runners, register one using the [Forgejo Runner setup guide](https://forgejo.org/docs/v16.0/admin/actions/). See the [Actions quick start](https://forgejo.org/docs/v16.0/user/actions/quick-start/) for enabling Actions and finding runner labels.
+3. On GitHub, create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) limited to `kazum1kun/PathOS`. Grant **Contents: Read and write** and **Workflows: Read and write** so changes to `.github/workflows/` can be pushed. The nightly publishing job itself continues using its own `GITHUB_TOKEN`; this token is only for synchronization from Forgejo.
+4. In [Forgejo Settings → Actions → Secrets](https://kaze.moe/kaz/PathOS/settings/actions/secrets), add a repository secret named `GH_MIRROR_TOKEN` containing that token. Keep the token in the secret field. Forgejo reserves names starting with `GITHUB_`, so use the name shown here.
+5. Commit and push `.forgejo/workflows/sync-github.yml` and `scripts/ci/sync-github.mjs` to Forgejo's `main`. Open **Actions → Sync main to GitHub** to inspect the automatically triggered run, or run it manually. The workflow pushes only `refs/heads/main:refs/heads/main`, without forcing changes, deleting remote refs, or pushing tags. If GitHub's `main` has diverged, it fails instead of replacing those commits.
+6. After the sync succeeds, republish the existing GitHub **Nightly** draft using tag `nightly` and target `main`. Check that the next source push leaves the release and tag intact.
+
+The sync script passes authentication to Git through temporary process environment settings. It does not put the token in the remote URL or save it in Git configuration.
+
 ## Cloudflare Pages through Codemagic
 
 The `cloudflare-pages` workflow in [`codemagic.yaml`](../codemagic.yaml) runs on Linux with Node.js 22. It installs the web dependencies, runs the checks and tests, builds `dist/`, and deploys that folder with Wrangler 4. Deployment runs only after those steps succeed. See Cloudflare's [Direct Upload with CI guide](https://developers.cloudflare.com/pages/how-to/use-direct-upload-with-continuous-integration/).
