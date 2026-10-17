@@ -29,6 +29,22 @@ There's no backend API, authentication service, or database server to set up, an
 
 For a private installation, add authentication at the hosting layer, then test that offline use still works. Some authentication setups prevent the service worker from caching responses.
 
+## GitHub Actions
+
+The [`Build web app`](../.github/workflows/web.yml) workflow builds on GitHub's standard `ubuntu-24.04` runner with Node.js 22. Push the workflow to the GitHub repository's default branch, then open **Actions → Build web app → Run workflow**, select a branch, and start the run. Leave **Deploy the built website to Cloudflare Pages** unchecked to build without Cloudflare credentials. Download `pathos-web` from the successful run's **Artifacts** section; its ZIP contains the website files ready to serve over HTTPS.
+
+To enable Cloudflare deployment, create a Pages project with Direct Upload (or choose an existing project), then open **Settings → Secrets and variables → Actions** in the GitHub repository and add:
+
+| Setting | Type | Value |
+| --- | --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Repository secret | API token with **Account → Cloudflare Pages → Edit** for the project's account |
+| `CLOUDFLARE_ACCOUNT_ID` | Repository variable or secret | The Cloudflare account ID |
+| `CLOUDFLARE_PAGES_PROJECT` | Repository variable | The Pages project name, such as `pathos` |
+
+Run **Build web app** with the Cloudflare deployment checkbox selected. After checks, tests, and the web build pass, the workflow uploads `dist/` using Wrangler 4. It passes the selected branch and commit to Pages. Match your Pages production branch to your release branch (`main` by default); other branches create previews. The deployed URL appears in the Wrangler log. See Cloudflare's [Direct Upload with CI guide](https://developers.cloudflare.com/pages/how-to/use-direct-upload-with-continuous-integration/).
+
+The workflow runs manually and keeps build artifacts for seven days. GitHub's standard runners are free for public repositories; private repositories use the account's included minutes and storage. See [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions). A build without the deployment checkbox doesn't need Cloudflare settings.
+
 ## Cloudflare Pages through Codemagic
 
 The `cloudflare-pages` workflow in [`codemagic.yaml`](../codemagic.yaml) runs on Linux with Node.js 22. It installs the web dependencies, runs the checks and tests, builds `dist/`, and deploys that folder with Wrangler 4. Deployment runs only after those steps succeed. See Cloudflare's [Direct Upload with CI guide](https://developers.cloudflare.com/pages/how-to/use-direct-upload-with-continuous-integration/).

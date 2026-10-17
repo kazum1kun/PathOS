@@ -13,7 +13,7 @@ python3 -m http.server 8000 --directory dist
 
 Open `http://localhost:8000`. For production, deploy `dist/` to a stable HTTPS address. Package inspection and gameplay happen entirely on the device, so there's no upload server to run. See [web deployment](docs/deployment.md).
 
-The `cloudflare-pages` workflow in [`codemagic.yaml`](codemagic.yaml) builds and deploys the website to Cloudflare Pages. See [Cloudflare setup](docs/deployment.md#cloudflare-pages-through-codemagic) for the required Codemagic variables.
+On GitHub, run **Actions → Build web app → Run workflow** to download the built website or deploy it to Cloudflare Pages. See [GitHub Actions setup](docs/deployment.md#github-actions). The [Codemagic workflow](codemagic.yaml) is also available.
 
 ## Build the iOS app
 
@@ -30,7 +30,7 @@ npm run open
 
 In Xcode, choose your signing team and run the `App` scheme. The project targets iOS and iPadOS 15+. See [iOS build and verification](docs/ios.md). This repository contains the source and an Xcode project, not a signed IPA, and the app hasn't been tested on a real device yet.
 
-To build on Codemagic, use the root [`codemagic.yaml`](codemagic.yaml). It includes simulator and signed IPA workflows. See [Codemagic setup](docs/ios.md#build-on-codemagic) for signing requirements and first-build steps.
+To build in the cloud, use **Actions → Build iOS app → Run workflow** on GitHub and choose an unsigned IPA, simulator app, or signed IPA. See [GitHub Actions setup](docs/ios.md#build-on-github-actions). The root [`codemagic.yaml`](codemagic.yaml) also includes simulator and signed IPA workflows; see [Codemagic setup](docs/ios.md#build-on-codemagic).
 
 ## Game updates
 

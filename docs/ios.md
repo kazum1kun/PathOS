@@ -36,6 +36,39 @@ xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -sdk 
 
 After changing the shared web code, run `npm run build` in the project root and `npm run sync` in `ios-native/` before building again. Don't run `cap add ios` on this project: it creates a fresh platform folder without the custom Swift code.
 
+## Build on GitHub Actions
+
+The [`Build iOS app`](../.github/workflows/ios.yml) workflow uses GitHub's standard `macos-26` runner with Xcode 26+ and Node.js 22. It installs the locked dependencies, runs the shared checks and tests, builds the web assets, syncs Capacitor, verifies the native project, and resolves Swift packages before compiling. These builds don't need a Codemagic account.
+
+Push the workflow and `scripts/ci/` helpers to the GitHub repository's default branch. Open **Actions → Build iOS app → Run workflow**, select a branch, and choose a build type:
+
+| Build type | Artifact | Requirements |
+| --- | --- | --- |
+| `unsigned-ipa` (default) | `PathOS-unsigned.ipa` | No signing secrets; sign it with your sideloading tool before installing on an iPhone or iPad |
+| `simulator` | `PathOS-simulator.zip`, containing `App.app` | No signing secrets; runs in the iOS Simulator on an Apple silicon Mac |
+| `signed-ipa` | `PathOS-signed.ipa` | Apple Distribution certificate with its private key and a matching distribution profile |
+
+Download the build from the completed run's **Artifacts** section. GitHub wraps each artifact in a ZIP, so extract it to get the IPA or simulator ZIP. Simulator builds use the Mac runner's ARM64 architecture and can't be installed on a phone. An unsigned IPA also needs signing before it can be installed. Logs are uploaded separately, including when Xcode fails.
+
+For `signed-ipa`, add these repository secrets under **Settings → Secrets and variables → Actions**:
+
+| Secret | Value |
+| --- | --- |
+| `IOS_CERTIFICATE_BASE64` | Base64 of an Apple Distribution `.p12` export containing the certificate and private key |
+| `IOS_CERTIFICATE_PASSWORD` | The `.p12` password; leave unset if the file has no password |
+| `IOS_PROVISIONING_PROFILE_BASE64` | Base64 of the matching `.mobileprovision` file for `com.swsoftworks.pathos` |
+
+On a Mac, encode each file using `base64 -i distribution.p12 | pbcopy` or `base64 -i PathOS.mobileprovision | pbcopy`, then paste the result into its secret. On PowerShell, use `[Convert]::ToBase64String([IO.File]::ReadAllBytes('distribution.p12')) | Set-Clipboard` with the appropriate filename. Keep the certificate, profile, and password out of the repository. GitHub's [Apple signing guide](https://docs.github.com/en/actions/how-tos/deploy/deploy-to-third-party-platforms/sign-xcode-applications) explains the certificate export and secret setup.
+
+The **Distribution method for signed-ipa only** dropdown accepts:
+
+- `app-store-connect`: use an App Store distribution profile; produces an IPA for upload to App Store Connect or TestFlight.
+- `release-testing`: use an Ad Hoc distribution profile containing the devices that will install the IPA.
+
+The signed build validates the profile, configures signing only on the `App` target, archives it, and exports the IPA with Xcode. It imports the certificate into a temporary keychain and removes the signing files when the job finishes. Uploading to App Store Connect is a separate step.
+
+Device builds set `CURRENT_PROJECT_VERSION` to `github.run_number`. If another build system has already uploaded a higher number, adjust `build_number` in [`scripts/ci/build-ios.sh`](../scripts/ci/build-ios.sh) before uploading. Workflows run manually and artifacts expire after seven days. GitHub's standard runners are free for public repositories; private repositories use the account's included minutes and storage, with macOS consuming more than Linux. See [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+
 ## Build on Codemagic
 
 The repository root includes [`codemagic.yaml`](../codemagic.yaml), following Codemagic's [Capacitor workflow](https://docs.codemagic.io/yaml-quick-start/building-an-ionic-app/). PathOS uses Capacitor and Swift Package Manager, so it doesn't need React Native, Expo, CocoaPods, or a generated Xcode workspace. The shared `App` scheme is checked into the Xcode project for CI builds.

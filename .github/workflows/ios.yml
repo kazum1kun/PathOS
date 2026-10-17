@@ -1,0 +1,155 @@
+name: Build iOS app
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: iOS build to produce
+        type: choice
+        required: true
+        default: unsigned-ipa
+        options:
+          - unsigned-ipa
+          - simulator
+          - signed-ipa
+      export_method:
+        description: Distribution method for signed-ipa only
+        type: choice
+        required: true
+        default: app-store-connect
+        options:
+          - app-store-connect
+          - release-testing
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}-${{ inputs.build_type }}
+  cancel-in-progress: false
+
+jobs:
+  ios:
+    runs-on: macos-26
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      XCODE_PROJECT: ios-native/ios/App/App.xcodeproj
+      XCODE_SCHEME: App
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            ios-native/package-lock.json
+      - name: Show Xcode version
+        run: xcodebuild -version
+      - name: Install web and native dependencies
+        run: |
+          npm ci
+          npm --prefix ios-native ci
+      - name: Check and test the shared app
+        run: |
+          npm run check
+          npm test
+      - name: Build web assets and sync Capacitor
+        run: |
+          npm run build
+          npm --prefix ios-native run sync
+          npm --prefix ios-native run verify
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project "$XCODE_PROJECT" -scheme "$XCODE_SCHEME"
+      - name: Import signing certificate and profile
+        if: inputs.build_type == 'signed-ipa'
+        env:
+          IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          IOS_EXPORT_METHOD: ${{ inputs.export_method }}
+        run: |
+          set -euo pipefail
+          : "${IOS_CERTIFICATE_BASE64:?Add the IOS_CERTIFICATE_BASE64 repository secret}"
+          : "${IOS_PROVISIONING_PROFILE_BASE64:?Add the IOS_PROVISIONING_PROFILE_BASE64 repository secret}"
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+          for variable, name in [
+              ('IOS_CERTIFICATE_BASE64', 'pathos-signing.p12'),
+              ('IOS_PROVISIONING_PROFILE_BASE64', 'pathos.mobileprovision'),
+          ]:
+              path = Path(os.environ['RUNNER_TEMP']) / name
+              path.write_bytes(base64.b64decode(''.join(os.environ[variable].split()), validate=True))
+              path.chmod(0o600)
+          PY
+          security cms -D -i "$RUNNER_TEMP/pathos.mobileprovision" > "$RUNNER_TEMP/pathos-profile.plist"
+          python3 scripts/ci/prepare-ios-profile.py
+          keychain_path="$RUNNER_TEMP/pathos-signing.keychain-db"
+          keychain_password="$(openssl rand -base64 32)"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$RUNNER_TEMP/pathos-signing.p12" \
+            -P "$IOS_CERTIFICATE_PASSWORD" -k "$keychain_path" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+      - name: Configure App target signing
+        if: inputs.build_type == 'signed-ipa'
+        run: |
+          gem install --user-install --no-document xcodeproj --version 1.27.0
+          ruby <<'RUBY'
+          require 'xcodeproj'
+          project = Xcodeproj::Project.open(ENV.fetch('XCODE_PROJECT'))
+          target = project.targets.find { |item| item.name == 'App' }
+          abort 'The App target was not found.' unless target
+          target.build_configurations.each do |configuration|
+            settings = configuration.build_settings
+            settings['CODE_SIGN_STYLE'] = 'Manual'
+            settings['DEVELOPMENT_TEAM'] = ENV.fetch('IOS_TEAM_ID')
+            settings['CODE_SIGN_IDENTITY'] = 'Apple Distribution'
+            settings['PROVISIONING_PROFILE_SPECIFIER'] = ENV.fetch('IOS_PROFILE_UUID')
+          end
+          project.save
+          RUBY
+      - name: Build and package iOS app
+        env:
+          BUILD_TYPE: ${{ inputs.build_type }}
+        run: bash scripts/ci/build-ios.sh "$BUILD_TYPE"
+      - name: Upload iOS app
+        uses: actions/upload-artifact@v7
+        with:
+          name: pathos-${{ inputs.build_type }}
+          path: build/artifacts/*
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pathos-ios-logs-${{ inputs.build_type }}
+          path: build/logs/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Remove signing files
+        if: always() && inputs.build_type == 'signed-ipa'
+        run: |
+          keychain_path="$RUNNER_TEMP/pathos-signing.keychain-db"
+          if [[ -f "$keychain_path" ]]; then
+            security delete-keychain "$keychain_path"
+          fi
+          if [[ -n "${IOS_PROFILE_UUID:-}" ]]; then
+            rm -f "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$IOS_PROFILE_UUID.mobileprovision"
+          fi
+          rm -f "$RUNNER_TEMP/pathos-signing.p12" "$RUNNER_TEMP/pathos.mobileprovision" "$RUNNER_TEMP/pathos-profile.plist"
