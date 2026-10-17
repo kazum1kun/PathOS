@@ -61,7 +61,8 @@ The web build has no install-time dependencies. The ZIP reader is vendored in `s
 | --- | --- |
 | `src/importer.js` | APK/ZIP validation, metadata, assets, and scene indexing |
 | `src/runtime.js` | Sandboxed player, local assets, and ChoiceScript state hooks |
-| `src/storage.js` | Transactional IndexedDB storage and backup import/export |
+| `src/storage.js` | Shared storage rules, browser IndexedDB and backup import/export |
+| `src/native-storage.js` | Native transaction adapter and automatic library migration |
 | `src/compatibility.js` | Update checks, save migration, copies, and checkpoints |
 | `src/app.js` | Shared library and editor interface |
 | `dist/` | Deployable static website |

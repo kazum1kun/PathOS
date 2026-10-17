@@ -7,7 +7,9 @@ import WebKit
 final class VaultBridgeViewController: CAPBridgeViewController {
     private var guardedCapacitorHandler: TrustedFrameHandler?
     private var exportHandler: VaultExportHandler?
+    private var storageHandler: VaultStorageHandler?
     private var guardedUIDelegate: TrustedUIDelegate?
+    private var backgroundSaveTask: UIBackgroundTaskIdentifier = .invalid
     private var exportInProgress = false
     private let exportDirectory = FileManager.default.temporaryDirectory
         .appendingPathComponent("PathOS-Exports", isDirectory: true)
@@ -33,13 +35,16 @@ final class VaultBridgeViewController: CAPBridgeViewController {
         let exporter = VaultExportHandler(controller: self)
         exportHandler = exporter
         controller.add(exporter, name: "pathosExport")
+        let storage = VaultStorageHandler(controller: self)
+        storageHandler = storage
+        controller.add(storage, name: "pathosStorage")
         controller.addUserScript(WKUserScript(
             source: Self.exportScript,
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         ))
 
-        // These are disposable share-sheet files; permanent saves live in the shared library.
+        // These are disposable share-sheet files; durable saves live in Application Support.
         try? FileManager.default.removeItem(at: exportDirectory)
         NotificationCenter.default.addObserver(self, selector: #selector(didEnterBackground),
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
@@ -48,11 +53,23 @@ final class VaultBridgeViewController: CAPBridgeViewController {
     }
 
     deinit {
+        if backgroundSaveTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundSaveTask) }
         NotificationCenter.default.removeObserver(self)
     }
 
     @objc private func didEnterBackground() {
+        finishBackgroundSave()
+        backgroundSaveTask = UIApplication.shared.beginBackgroundTask(withName: "Save PathOS library") { [weak self] in
+            self?.finishBackgroundSave()
+        }
         webView?.evaluateJavaScript("document.dispatchEvent(new Event('vault-native-pause'))", completionHandler: nil)
+    }
+
+    fileprivate func finishBackgroundSave() {
+        if backgroundSaveTask != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundSaveTask)
+            backgroundSaveTask = .invalid
+        }
     }
 
     @objc private func willEnterForeground() {
@@ -117,7 +134,7 @@ final class VaultBridgeViewController: CAPBridgeViewController {
         present(activity, animated: true)
     }
 
-    private func reply(_ id: String, result: [String: Any] = [:], error: String? = nil) {
+    fileprivate func reply(_ id: String, result: Any = [String: Any](), error: String? = nil) {
         var response: [String: Any] = ["id": id, "ok": error == nil, "result": result]
         if let error = error { response["error"] = error }
         guard let bytes = try? JSONSerialization.data(withJSONObject: response),
@@ -132,6 +149,14 @@ final class VaultBridgeViewController: CAPBridgeViewController {
       let counter = 0;
       const api = {
         platform: 'ios',
+        storage(request) {
+          const id = `storage_${Date.now()}_${++counter}`;
+          return new Promise((resolve, reject) => {
+            pending.set(id, {resolve, reject});
+            try { window.webkit.messageHandlers.pathosStorage.postMessage(JSON.parse(JSON.stringify({...request, id}))); }
+            catch (error) { pending.delete(id); reject(error); }
+          });
+        },
         exportFile({name, data, mime = 'application/json'}) {
           if (typeof name !== 'string' || typeof data !== 'string') {
             return Promise.reject(new TypeError('Export requires a filename and text data.'));
@@ -152,7 +177,7 @@ final class VaultBridgeViewController: CAPBridgeViewController {
           if (!call) return;
           pending.delete(response.id);
           if (response.ok) call.resolve(response.result);
-          else call.reject(new Error(response.error || 'Export failed.'));
+          else call.reject(new Error(response.error || 'Native request failed.'));
         }
       };
       Object.defineProperty(window, 'VaultNative', {value: Object.freeze(api), writable: false, configurable: false});
@@ -198,6 +223,34 @@ private final class VaultExportHandler: NSObject, WKScriptMessageHandler {
               message.webView === controller?.webView,
               let payload = message.body as? [String: Any] else { return }
         controller?.exportFile(payload)
+    }
+}
+
+private final class VaultStorageHandler: NSObject, WKScriptMessageHandler {
+    private weak var controller: VaultBridgeViewController?
+    private let queue = DispatchQueue(label: "com.swsoftworks.pathos.storage", qos: .userInitiated)
+    private let store = VaultStore()
+
+    init(controller: VaultBridgeViewController) { self.controller = controller }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard isTrustedLibraryFrame(message), message.webView === controller?.webView,
+              let payload = message.body as? [String: Any], let id = payload["id"] as? String,
+              id.range(of: "^[A-Za-z0-9_-]{1,80}$", options: .regularExpression) != nil else { return }
+        if payload["operation"] as? String == "backgroundSaveFinished" {
+            controller?.finishBackgroundSave()
+            controller?.reply(id)
+            return
+        }
+        queue.async { [self] in
+            do {
+                let result = try store.handle(payload)
+                DispatchQueue.main.async { [weak self] in self?.controller?.reply(id, result: result) }
+            } catch {
+                let message = error.localizedDescription
+                DispatchQueue.main.async { [weak self] in self?.controller?.reply(id, error: message) }
+            }
+        }
     }
 }
 

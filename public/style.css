@@ -205,3 +205,5 @@ dialog textarea{height:280px;font:12px/1.6 var(--mono);white-space:pre;tab-size:
   .metadata{grid-template-columns:1fr}
 }
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+
+.storage-tip{border:1px solid var(--rule);border-radius:8px;padding:14px 18px;margin:0 0 20px}.storage-tip p{margin:5px 0 0}.storage-tip .text-button{font-size:inherit}

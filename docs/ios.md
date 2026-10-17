@@ -127,24 +127,34 @@ Keep these values the same in every release:
 | WKWebView hostname | `localhost` |
 | Shared database name | `story-vault` |
 
-The app's local origin is `capacitor://localhost`. Changing the scheme or hostname changes the web storage origin, and the existing IndexedDB library becomes unreachable. Changing the bundle ID installs a separate app. The database name predates the PathOS name and stays as it is so that existing libraries keep working. When you release a new build, increase the version and build numbers but leave these identifiers alone.
+The app's local origin is `capacitor://localhost`. Keep the scheme and hostname stable so that the one-time migration can still find an earlier IndexedDB library. Changing the bundle ID installs a separate app. The database name predates the PathOS name and stays as it is so that existing libraries keep working. When you release a new build, increase the version and build numbers but leave these identifiers alone.
 
 Game updates are imported inside the app and have nothing to do with native app releases. The library tracks games, installed versions, and saves as separate records. See [save compatibility](save-compatibility.md).
+
+The app stores game, version, save and profile records in `Library/Application Support/PathOS/library.sqlite` using SQLite WAL transactions with full synchronization. Binary game files live in immutable UUID directories under `Library/Application Support/PathOS/Assets`. Writes finish and synchronize the new files before committing the referencing records. Rollbacks remove new files, committed deletions retire old files, and startup removes orphaned directories left by interrupted writes. Autosave ownership checks query version keys without reading game files. Imported game paths never become filesystem paths.
+
+On the first upgraded launch, the app reads and validates the complete earlier `story-vault` library, then copies it into native storage in one transaction. A completion marker commits in that same transaction. Migration leaves the old IndexedDB copy intact; it is never used again once migration completes, so deleted native records cannot return from the old copy. Migration failures stop startup with a recovery message, preserve the source, and can be retried. Native storage errors never silently fall back to browser storage.
+
+The library is eligible for normal device backups (including iCloud Backup if enabled for the app). This is not live iCloud sync and does not guarantee the user has a current device backup. Export a full backup to Files or iCloud Drive for an independent, portable copy. Native background saves request limited iOS background execution time while flushing.
 
 Deleting the app deletes its local data. The browser and the iOS app have separate storage, so use a backup file to move a library between them. This release doesn't include cloud sync.
 
 ## Native boundaries
 
-`VaultBridgeViewController.swift` injects `VaultNative` into the trusted main frame only. The export handler, Capacitor's general native message transport, and the native dialog transport all check `WKScriptMessage.frameInfo.isMainFrame` and the exact bundled origin before forwarding a request. Apple documents the frame property under [WKFrameInfo.isMainFrame](https://developer.apple.com/documentation/webkit/wkframeinfo/ismainframe).
+`VaultBridgeViewController.swift` injects `VaultNative` into the trusted main frame only. The storage handler, export handler, Capacitor's general native message transport, and the native dialog transport all check `WKScriptMessage.frameInfo.isMainFrame` and the exact bundled origin before forwarding a request. Apple documents the frame property under [WKFrameInfo.isMainFrame](https://developer.apple.com/documentation/webkit/wkframeinfo/ismainframe).
 
 Imported games run in the shared player's sandboxed iframe and never get access to native plugins. The release configuration loads the bundled web assets. It doesn't set a remote `server.url` or an open navigation allowlist.
 
 ## Verification status
 
-The project was generated with the pinned Capacitor CLI. Its configuration, storyboard and scene wiring, and injected JavaScript bridge were checked in the development environment. The export JavaScript was run against simulated native replies covering success, cancellation, native errors, invalid input, and the origin and frame restrictions.
+The project was generated with the pinned Capacitor CLI. Its configuration, storyboard and scene wiring, and injected JavaScript bridge were checked in the development environment. The injected JavaScript is checked against simulated export and storage replies, including errors and the origin and frame restrictions. Shared tests cover native migration, interrupted writes, save retention, conflict rollback, binary backup portability and the iOS storage guidance. On macOS, `npm run verify` additionally compiles `VaultStore.swift` with `scripts/storage-tests.swift` and runs real SQLite/filesystem checks for reopen, binary assets, rollback, migration markers, interrupted imports, orphan cleanup, key-only queries and deletion. The existing macOS build workflows already call that verification command.
 
-Swift compilation, simulator runs, real file picking, native export, and data persistence across signed app upgrades all need Xcode on macOS, and none of them have been tested on an iPhone yet. Before relying on the app for a long playthrough, check these on your device:
+Swift compilation, simulator runs, real file picking, native export, and data persistence across signed app upgrades all need Xcode on macOS, and none of them have been tested on an iPhone yet. The native SQLite integration runner has not been executed in the Windows development environment. Before relying on the app for a long playthrough, check these on your device:
 
+- Upgrade a build containing games and saves in IndexedDB; verify the migrated library after force-quitting and reopening.
+- Interrupt an initial migration and retry it; verify no partial library or missing source data.
+- Save while backgrounding, then reopen offline and verify the latest saved position.
+- Restore the same backup twice and verify that saves and game assets remain intact.
 - Web Crypto availability and package import
 - Local Blob asset loading
 - Scene changes and save editing

@@ -1,6 +1,6 @@
 # Deploy the web app
 
-PathOS is a static, client-only web app. To deploy it, you only need the generated `dist/` files. Game packages and saves are imported on the user's device and stored in IndexedDB. Nothing is uploaded to a server.
+PathOS is a static, client-only web app. To deploy it, you only need the generated `dist/` files. Game packages and saves are imported on the user's device and stored in IndexedDB on the web. The native iOS app instead uses SQLite and Application Support files. Nothing is uploaded to a server.
 
 ## Local use
 
@@ -99,7 +99,7 @@ On iOS, open the HTTPS site in Safari and tap **Share → Add to Home Screen**. 
 
 Browser storage belongs to the full origin: scheme, hostname, and port. A new hostname, a different development port, a different browser profile, and the iOS app each get their own library. Export a backup before moving to a new address or clearing site data. Private browsing and low device storage can also cause data to be cleared.
 
-Where the browser supports it, the app asks for persistent storage, but it can't guarantee that the operating system or browser will keep website data forever. Regular backups give you a copy you can move.
+Where the browser supports it, the app asks for persistent storage, but it can't guarantee that the operating system or browser will keep website data forever. Regular backups give you a copy you can move. On iPhone and iPad, PathOS shows Home Screen installation steps in Help and Check device storage, plus a banner when running in the browser. Export a backup before installing from Safari’s Share menu, open the new Home Screen icon, restore the backup if needed, and check storage again. Installation can help Safari grant persistence; the app cannot force approval.
 
 ## Updating the website
 

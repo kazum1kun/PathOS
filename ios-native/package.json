@@ -6,7 +6,8 @@
   "scripts": {
     "sync": "node scripts/check-web.mjs && cap sync ios",
     "open": "cap open ios",
-    "verify": "node scripts/verify-project.mjs"
+    "verify": "node scripts/verify-project.mjs",
+    "test:storage": "bash scripts/test-storage.sh"
   },
   "dependencies": {
     "@capacitor/core": "8.5.3",

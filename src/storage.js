@@ -120,7 +120,128 @@ export function storageError(error) {
   return error instanceof Error ? error : new Error(String(error || 'The library could not be saved.'));
 }
 
+// Native JSON round trips may reorder object keys; save identity compares values.
+const canonical = value => JSON.stringify(value, (_, item) => plain(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+
+// Both backends use the same validation, merge and save-retention rules.
+export function createVault(transact, storageKind = 'browser') {
+  function mergeRecords(imported, markMigrated = false) {
+    return transact(STORES, 'readwrite', async tx => {
+      const existing = {};
+      const merged = {};
+      for (const store of STORES) {
+        existing[store] = await tx.getAll(store);
+        const byId = new Map(existing[store].map(record => [record.id, record]));
+        for (const record of imported[store]) {
+          const previous = byId.get(record.id);
+          if (store === 'versions' && previous && (previous.gameId !== record.gameId || previous.contentHash !== record.contentHash)) throw new Error('The backup contains a version ID that conflicts with an installed version.');
+          if (store === 'saves' && previous && canonical(previous) !== canonical(record)) throw new Error('The backup contains a save ID that conflicts with an existing save. Export both libraries separately before restoring.');
+          if (!previous) byId.set(record.id, record);
+        }
+        merged[store] = [...byId.values()];
+      }
+      validateRelationships(merged);
+      for (const store of STORES) {
+        const known = new Set(existing[store].map(record => record.id));
+        for (const record of imported[store]) if (!known.has(record.id)) await tx.put(store, record);
+      }
+      if (markMigrated) await tx.markMigrated();
+      return { games: imported.games.length, versions: imported.versions.length, saves: imported.saves.length };
+    });
+  }
+  const api = {
+    storageKind,
+    get: (store, key) => transact([store], 'readonly', tx => tx.get(store, key)),
+    getAll: (store, index, key) => transact([store], 'readonly', tx => tx.getAll(store, index, key)),
+    put(store, record) {
+      validateRecord(store, record);
+      return transact([store], 'readwrite', async tx => { await tx.put(store, record); return record; });
+    },
+    delete: (store, key) => transact([store], 'readwrite', tx => tx.delete(store, key)),
+    importVersion(game, version) {
+      validateRecord('games', game); validateRecord('versions', version);
+      if (version.gameId !== game.id) throw new Error('The version belongs to a different game.');
+      if (game.activeVersionId && game.activeVersionId !== version.id) throw new Error('The imported version must be the active version.');
+      return transact(['games', 'versions'], 'readwrite', async tx => {
+        const existing = await tx.get('versions', version.id);
+        if (existing && (existing.gameId !== game.id || existing.contentHash !== version.contentHash)) throw new Error('This version ID is already used by another version.');
+        await tx.put('games', { ...game, activeVersionId: version.id });
+        await tx.put('versions', version);
+        return { game, version };
+      });
+    },
+    putSave: save => api.putSaves([save]).then(() => save),
+    putSaves(records) {
+      if (!Array.isArray(records)) throw new Error('The save batch must be an array.');
+      const ids = new Set();
+      for (const record of records) {
+        validateSaveRecord(record);
+        if (ids.has(record.id)) throw new Error('The save batch contains duplicate IDs.');
+        ids.add(record.id);
+      }
+      if (!records.length) return Promise.resolve([]);
+      return transact(['versions', 'saves'], 'readwrite', async tx => {
+        const installed = new Map();
+        for (const gameId of new Set(records.map(record => record.gameId))) {
+          // Read keys only: save ownership checks must not load the game assets.
+          installed.set(gameId, await tx.getAllKeys('versions', 'gameId', gameId));
+        }
+        for (const record of records) {
+          if (!installed.get(record.gameId).includes(record.versionId)) throw new Error('The save batch contains a save that does not belong to an installed game version.');
+          const previous = await tx.get('saves', record.id);
+          if (previous && canonical(previous) !== canonical(record)) throw new Error('This save ID already exists. Save edits and migrations as a new copy.');
+        }
+        const expired = new Set();
+        for (const versionId of new Set(records.filter(record => record.kind === 'auto').map(record => record.versionId))) {
+          const existing = await tx.getAll('saves', 'versionId', versionId);
+          const byId = new Map(existing.filter(record => record.kind === 'auto').map(record => [record.id, record]));
+          for (const record of records) if (record.kind === 'auto' && record.versionId === versionId) byId.set(record.id, record);
+          const automatic = [...byId.values()].sort((left, right) => String(right.createdAt ?? '').localeCompare(String(left.createdAt ?? '')) || right.id.localeCompare(left.id));
+          for (const record of automatic.slice(MAX_AUTOSAVES_PER_VERSION)) expired.add(record.id);
+        }
+        for (const id of expired) await tx.delete('saves', id);
+        for (const record of records) if (!expired.has(record.id)) await tx.put('saves', record);
+        return records;
+      });
+    },
+    exportRecords() {
+      return transact(STORES, 'readonly', async tx => {
+        const records = {};
+        for (const store of STORES) records[store] = await tx.getAll(store);
+        return records;
+      });
+    },
+    exportBackup: () => api.exportRecords().then(encodeBackup),
+    restoreBackup: input => mergeRecords(decodeBackup(input)),
+    migrateRecords(records) {
+      // Only the existing on-device library takes this path. Avoid encoding the
+      // whole library as a backup and imposing a backup-file size limit on it.
+      for (const store of STORES) {
+        if (!Array.isArray(records[store])) throw new Error('The existing library is incomplete.');
+        for (const record of records[store]) validateRecord(store, record);
+      }
+      validateRelationships(records);
+      return mergeRecords(records, true);
+    },
+    deleteGame(gameId) {
+      return transact(['games', 'versions', 'saves'], 'readwrite', async tx => {
+        await tx.delete('games', gameId);
+        for (const store of ['versions', 'saves']) {
+          for (const key of await tx.getAllKeys(store, 'gameId', gameId)) await tx.delete(store, key);
+        }
+      });
+    },
+  };
+  return api;
+}
+
 export async function openVault(options = {}) {
+  const native = options.native === false ? null : options.nativeStorage ?? globalThis.window?.VaultNative?.storage;
+  if (native) {
+    const { openNativeVault } = await import('./native-storage.js');
+    return openNativeVault(native, () => openVault({ ...options, native: false }));
+  }
+  if (options.native !== false && globalThis.location?.protocol === 'capacitor:') throw new Error('Native library storage is unavailable. Reopen or update PathOS before saving.');
   const factory = options.indexedDB ?? globalThis.indexedDB;
   if (!factory) throw new Error('This browser doesn’t support IndexedDB. Open PathOS in a supported browser, outside private browsing.');
   const db = await new Promise((resolve, reject) => {
@@ -140,195 +261,31 @@ export async function openVault(options = {}) {
     request.onblocked = () => reject(new Error('PathOS is open in another tab. Close the other tabs and try again.'));
   });
   db.onversionchange = () => db.close();
-
-  function transact(stores, mode, action) {
-    return new Promise((resolve, reject) => {
-      let result;
-      let failure;
-      let transaction;
-      try {
-        transaction = db.transaction(stores, mode);
-        transaction.oncomplete = () => resolve(result);
-        transaction.onabort = () => reject(storageError(failure ?? transaction.error));
-        transaction.onerror = () => { /* onabort provides the final atomic outcome */ };
-        const setResult = value => { result = value; };
-        const abort = error => { failure = error; transaction.abort(); };
-        action(transaction, setResult, abort);
-      } catch (error) {
-        failure = error;
-        try { transaction?.abort(); } catch { /* already finished */ }
-        reject(storageError(error));
-      }
-    });
-  }
-
-  function allRecords(transaction, callback, abort) {
-    const records = {};
-    let pending = STORES.length;
-    for (const name of STORES) {
-      const request = transaction.objectStore(name).getAll();
-      request.onsuccess = () => {
-        records[name] = request.result;
-        if (--pending === 0) { try { callback(records); } catch (error) { abort(error); } }
+  const requestResult = request => new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  const api = createVault((stores, mode, action) => new Promise((resolve, reject) => {
+    let result, failure, transaction;
+    try {
+      transaction = db.transaction(stores, mode);
+      transaction.oncomplete = () => resolve(result);
+      transaction.onabort = () => reject(storageError(failure ?? transaction.error));
+      transaction.onerror = () => { /* onabort provides the final atomic outcome */ };
+      const source = (store, index) => index ? transaction.objectStore(store).index(index) : transaction.objectStore(store);
+      const tx = {
+        get: (store, key) => requestResult(source(store).get(key)),
+        getAll: (store, index, key) => requestResult(key === undefined ? source(store, index).getAll() : source(store, index).getAll(key)),
+        getAllKeys: (store, index, key) => requestResult(key === undefined ? source(store, index).getAllKeys() : source(store, index).getAllKeys(key)),
+        put: (store, record) => requestResult(source(store).put(record)),
+        delete: (store, key) => requestResult(source(store).delete(key)),
       };
-    }
-  }
-
-  const api = {
-    get(store, key) {
-      return transact([store], 'readonly', (transaction, done) => {
-        const request = transaction.objectStore(store).get(key);
-        request.onsuccess = () => done(request.result);
+      Promise.resolve().then(() => action(tx)).then(value => { result = value; }, error => {
+        failure = error;
+        try { transaction.abort(); } catch { reject(storageError(error)); }
       });
-    },
-    getAll(store, index, key) {
-      return transact([store], 'readonly', (transaction, done) => {
-        const source = index ? transaction.objectStore(store).index(index) : transaction.objectStore(store);
-        const request = key === undefined ? source.getAll() : source.getAll(key);
-        request.onsuccess = () => done(request.result);
-      });
-    },
-    put(store, record) {
-      validateRecord(store, record);
-      return transact([store], 'readwrite', (transaction, done) => { transaction.objectStore(store).put(record); done(record); });
-    },
-    delete(store, key) {
-      return transact([store], 'readwrite', transaction => transaction.objectStore(store).delete(key));
-    },
-    importVersion(game, version) {
-      validateRecord('games', game); validateRecord('versions', version);
-      if (version.gameId !== game.id) throw new Error('The version belongs to a different game.');
-      if (game.activeVersionId && game.activeVersionId !== version.id) throw new Error('The imported version must be the active version.');
-      return transact(['games', 'versions'], 'readwrite', (transaction, done, abort) => {
-        const versions = transaction.objectStore('versions');
-        const existing = versions.get(version.id);
-        existing.onsuccess = () => {
-          if (existing.result && (existing.result.gameId !== game.id || existing.result.contentHash !== version.contentHash)) {
-            abort(new Error('This version ID is already used by another version.')); return;
-          }
-          transaction.objectStore('games').put({ ...game, activeVersionId: version.id });
-          versions.put(version); done({ game, version });
-        };
-      });
-    },
-    putSave(save) {
-      validateSaveRecord(save);
-      return transact(['versions', 'saves'], 'readwrite', (transaction, done, abort) => {
-        const request = transaction.objectStore('versions').index('gameId').getAllKeys(save.gameId);
-        request.onsuccess = () => {
-          if (!request.result.includes(save.versionId)) { abort(new Error('The save does not belong to an installed game version.')); return; }
-          const saves = transaction.objectStore('saves');
-          const previous = saves.get(save.id);
-          previous.onsuccess = () => {
-            if (previous.result && JSON.stringify(previous.result) !== JSON.stringify(save)) {
-              abort(new Error('This save ID already exists. Save edits and migrations as a new copy.')); return;
-            }
-            if (save.kind !== 'auto') { saves.put(save); done(save); return; }
-            const retained = saves.index('versionId').getAll(save.versionId);
-            retained.onsuccess = () => {
-              const automatic = retained.result.filter(record => record.kind === 'auto' && record.id !== save.id);
-              automatic.push(save);
-              automatic.sort((left, right) => String(right.createdAt ?? '').localeCompare(String(left.createdAt ?? '')) || right.id.localeCompare(left.id));
-              for (const expired of automatic.slice(MAX_AUTOSAVES_PER_VERSION)) saves.delete(expired.id);
-              if (automatic.slice(0, MAX_AUTOSAVES_PER_VERSION).some(record => record.id === save.id)) saves.put(save);
-              done(save);
-            };
-          };
-        };
-      });
-    },
-    putSaves(records) {
-      if (!Array.isArray(records)) throw new Error('The save batch must be an array.');
-      const ids = new Set();
-      for (const record of records) {
-        validateSaveRecord(record);
-        if (ids.has(record.id)) throw new Error('The save batch contains duplicate IDs.');
-        ids.add(record.id);
-      }
-      if (!records.length) return Promise.resolve([]);
-      return transact(['versions', 'saves'], 'readwrite', (transaction, done, abort) => {
-        const saves = transaction.objectStore('saves');
-        const games = [...new Set(records.map(record => record.gameId))];
-        const installed = new Map();
-        const existing = new Map();
-        let pending = games.length + records.length;
-        const checked = () => {
-          if (--pending) return;
-          for (const record of records) {
-            if (!installed.get(record.gameId)?.has(record.versionId)) { abort(new Error('The save batch contains a save that does not belong to an installed game version.')); return; }
-            const previous = existing.get(record.id);
-            if (previous && JSON.stringify(previous) !== JSON.stringify(record)) { abort(new Error('This save ID already exists. Save edits and migrations as a new copy.')); return; }
-          }
-          const autoVersions = [...new Set(records.filter(record => record.kind === 'auto').map(record => record.versionId))];
-          const expired = new Set();
-          const commit = () => {
-            for (const id of expired) saves.delete(id);
-            for (const record of records) if (!expired.has(record.id)) saves.put(record);
-            done(records);
-          };
-          if (!autoVersions.length) { commit(); return; }
-          let remaining = autoVersions.length;
-          for (const versionId of autoVersions) {
-            const request = saves.index('versionId').getAll(versionId);
-            request.onsuccess = () => {
-              const byId = new Map(request.result.filter(record => record.kind === 'auto').map(record => [record.id, record]));
-              for (const record of records) if (record.kind === 'auto' && record.versionId === versionId) byId.set(record.id, record);
-              const automatic = [...byId.values()].sort((left, right) => String(right.createdAt ?? '').localeCompare(String(left.createdAt ?? '')) || right.id.localeCompare(left.id));
-              for (const record of automatic.slice(MAX_AUTOSAVES_PER_VERSION)) expired.add(record.id);
-              if (--remaining === 0) commit();
-            };
-          }
-        };
-        for (const gameId of games) {
-          // Read keys only: checking ownership must not clone entire APK assets.
-          const request = transaction.objectStore('versions').index('gameId').getAllKeys(gameId);
-          request.onsuccess = () => { installed.set(gameId, new Set(request.result)); checked(); };
-        }
-        for (const record of records) {
-          const request = saves.get(record.id);
-          request.onsuccess = () => { existing.set(record.id, request.result); checked(); };
-        }
-      });
-    },
-    exportBackup() {
-      return transact(STORES, 'readonly', (transaction, done, abort) => allRecords(transaction, records => done(encodeBackup(records)), abort));
-    },
-    restoreBackup(input) {
-      const imported = decodeBackup(input);
-      return transact(STORES, 'readwrite', (transaction, done, abort) => {
-        allRecords(transaction, existing => {
-          const merged = {};
-          for (const store of STORES) {
-            const byId = new Map(existing[store].map(record => [record.id, record]));
-            for (const record of imported[store]) {
-              const previous = byId.get(record.id);
-              if (store === 'versions' && previous && (previous.gameId !== record.gameId || previous.contentHash !== record.contentHash)) throw new Error('The backup contains a version ID that conflicts with an installed version.');
-              if (store === 'saves' && previous && JSON.stringify(previous) !== JSON.stringify(record)) throw new Error('The backup contains a save ID that conflicts with an existing save. Export both libraries separately before restoring.');
-              // Existing preferences/active-version selection win on repeated imports.
-              if (!previous) byId.set(record.id, record);
-            }
-            merged[store] = [...byId.values()];
-          }
-          validateRelationships(merged);
-          for (const store of STORES) {
-            const known = new Set(existing[store].map(record => record.id));
-            for (const record of imported[store]) if (!known.has(record.id)) transaction.objectStore(store).put(record);
-          }
-          done({ games: imported.games.length, versions: imported.versions.length, saves: imported.saves.length });
-        }, abort);
-      });
-    },
-    deleteGame(gameId) {
-      return transact(['games', 'versions', 'saves'], 'readwrite', transaction => {
-        transaction.objectStore('games').delete(gameId);
-        for (const name of ['versions', 'saves']) {
-          const store = transaction.objectStore(name);
-          const request = store.index('gameId').getAllKeys(gameId);
-          request.onsuccess = () => { for (const key of request.result) store.delete(key); };
-        }
-      });
-    },
-    close() { db.close(); },
-  };
+    } catch (error) { reject(storageError(error)); }
+  }));
+  api.close = () => db.close();
   return api;
 }

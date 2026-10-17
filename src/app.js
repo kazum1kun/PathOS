@@ -98,7 +98,7 @@ async function importArchive(file,targetGameId) {
           await db.importVersion(game,version);
           selected=game.id;tab='saves';$('#modal').close();await refresh();
           notify(existing?'Update imported. All your earlier saves and versions are still here.':'Game imported. Start a new playthrough when you’re ready.');
-          navigator.storage?.persist?.().catch(()=>{});
+          if(db.storageKind==='browser')requestPersistence().catch(()=>{});
         }catch(e){$('#import-error').textContent=e.message;$('#confirm-import').disabled=false;}
       };
     });
@@ -204,12 +204,35 @@ function previewLegacyImport(envelope,game){
     preview();
   });
 }
-function help(){modal(`<h2>Your games, kept together</h2><p>Import an APK that contains a complete ChoiceScript web game, or a ZIP of a playable ChoiceScript folder. Android code, in-app purchases, and chapters that download after installation won’t work here.</p><ol><li>Import a game and start playing. Automatic snapshots keep your recent positions; named snapshots stay until you delete them.</li><li>When a game gets an update, import the new APK and choose the same game under “Library.” This works even if the update’s detected game ID has changed.</li><li>All saves appear in one list. When you resume, PathOS checks the saved chapter against the version you picked. If the save can’t continue there, you can still play it on its original version.</li><li>Use Edit to make a modified copy. Export a single save or a full backup to move between browsers and the iOS app.</li></ol><p>Your library is stored in this browser, for this site address only. The iOS app keeps its own library, and the two don’t sync. Backups include the imported game files, so keep them private.</p><p>PathOS works offline once your browser has cached it. Keep using the same site address so your library carries over to new releases.</p><div class="modal-actions"><button id="help-restore" class="secondary">Restore backup</button><button data-close class="primary">Done</button></div>`,()=>{$('#help-restore').onclick=()=>{$('#modal').close();$('#backup-file').click();};});}
+function isIOSWeb(){return !window.VaultNative&&(/iPad|iPhone|iPod/.test(navigator.userAgent||'')||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1));}
+function isHomeScreen(){return navigator.standalone===true||window.matchMedia?.('(display-mode: standalone)').matches===true;}
+function iosHomeScreenHelp(){return `<h3>Keep PathOS on your Home Screen</h3><ol><li>Export a backup of your current library to Files or iCloud Drive.</li><li>Open this site in Safari. In the Share menu, choose Add to Home Screen, then tap Add. If offered, leave Open as Web App on.</li><li>Open PathOS from its Home Screen icon. If your library is empty, use Restore backup.</li><li>Tap Check device storage to request persistent storage again.</li></ol><p>Home Screen installation can help Safari grant persistent storage. Approval is decided by iOS, so keep backups even after installing.</p>`;}
+async function requestPersistence(){
+  try{if(await navigator.storage?.persisted?.())return true;return await navigator.storage?.persist?.()===true;}
+  catch{return false;}
+}
+function setupStorageHelp(){
+  const native=db.storageKind==='native';
+  $('#local-storage-note').textContent=native?'Games and saves use durable app storage. Export a backup to keep another copy.':'Games and saves stay in this browser. Export a backup to move them.';
+  $('#ios-storage-help').hidden=!isIOSWeb()||isHomeScreen();
+  $('#ios-storage-steps').onclick=()=>modal(`${iosHomeScreenHelp()}<div class="modal-actions"><button data-close class="primary">Done</button></div>`);
+}
+async function showStorageInfo(){
+  if(db.storageKind==='native'){
+    const info=await db.storageInfo();
+    modal(`<h2>Saved on this device</h2><p>Using ${bytes(info.usage)}. About ${bytes(info.available)} is available on the device.</p><p>Your games and saves use durable app storage and stay through app updates. Deleting the app deletes its local library.</p><p>Export a backup to Files or iCloud Drive to keep an independent copy. Device backups can include this library when backup is enabled for PathOS; this does not sync it with the web version.</p><div class="modal-actions"><button data-close class="primary">Done</button></div>`);
+    return;
+  }
+  const persistent=await requestPersistence();
+  let estimate;try{estimate=await navigator.storage?.estimate?.();}catch{/* Status and installation help are still useful. */}
+  modal(`<h2>Browser storage</h2>${estimate?`<p>Using ${bytes(estimate.usage||0)} of about ${bytes(estimate.quota||0)}.</p>`:''}<p>${persistent?'Persistent storage is on. Keep backups to protect against clearing site data or losing your device.':'Persistent storage has not been confirmed. Your browser may clear this library, so export backups to keep another copy.'}</p>${isIOSWeb()?iosHomeScreenHelp():''}<div class="modal-actions"><button data-close class="primary">Done</button></div>`);
+}
+function help(){modal(`<h2>Your games, kept together</h2><p>Import an APK that contains a complete ChoiceScript web game, or a ZIP of a playable ChoiceScript folder. Android code, in-app purchases, and chapters that download after installation won’t work here.</p><ol><li>Import a game and start playing. Automatic snapshots keep your recent positions; named snapshots stay until you delete them.</li><li>When a game gets an update, import the new APK and choose the same game under “Library.” This works even if the update’s detected game ID has changed.</li><li>All saves appear in one list. When you resume, PathOS checks the saved chapter against the version you picked. If the save can’t continue there, you can still play it on its original version.</li><li>Use Edit to make a modified copy. Export a single save or a full backup to move between browsers and the iOS app.</li></ol><p>${db.storageKind==='native'?'Your library is saved in the app’s durable device storage. It stays through app updates, but deleting the app deletes its local data.':'Your library is stored in this browser, for this site address only. Keep using the same address so it carries over to new releases.'} The browser and iOS app keep separate libraries and don’t sync. Backups include the imported game files, so keep them private.</p>${isIOSWeb()?iosHomeScreenHelp():''}<p>Export a backup to Files or iCloud Drive to protect against losing your device or deleting local data.</p><div class="modal-actions"><button id="help-restore" class="secondary">Restore backup</button><button data-close class="primary">Done</button></div>`,()=>{$('#help-restore').onclick=()=>{$('#modal').close();$('#backup-file').click();};});}
 
 $('#import').onclick=()=>{delete $('#archive-file').dataset.target;$('#archive-file').click();};
 $('#archive-file').onchange=event=>{const file=event.target.files[0];if(file)importArchive(file,event.target.dataset.target).catch(report);event.target.value='';};
 $('#save-file').onchange=event=>{const file=event.target.files[0];if(file)importSave(file).catch(report);event.target.value='';};
-$('#backup').onclick=async()=>{try{if(runtime)await flush();notify('Preparing a backup of games, versions, and saves…');await exportFile('PathOS-Backup-'+new Date().toISOString().slice(0,10)+'.json',await db.exportBackup());notify('Backup ready. Keep a copy somewhere outside this browser.');}catch(e){report(e);}};
+$('#backup').onclick=async()=>{try{if(runtime)await flush();notify('Preparing a backup of games, versions, and saves…');await exportFile('PathOS-Backup-'+new Date().toISOString().slice(0,10)+'.json',await db.exportBackup());notify('Backup ready. Keep a copy somewhere outside PathOS.');}catch(e){report(e);}};
 $('#restore-backup').onclick=()=>$('#backup-file').click();
 $('#backup-file').onchange=async event=>{const file=event.target.files[0];event.target.value='';if(!file)return;try{
   if(file.size>700*1024*1024)throw new Error('This backup is too large to restore here.');
@@ -218,10 +241,10 @@ $('#backup-file').onchange=async event=>{const file=event.target.files[0];event.
 }catch(e){report(e);}};
 $('#search').oninput=render;$('#help').onclick=help;$('#save-now').onclick=manualSave;
 $('#leave-player').onclick=()=>leavePlayer().catch(error=>{modal(`<h2>No new snapshot was saved</h2><p>${esc(error.message)}</p><p>Wait for the game to finish loading and try again, or return to the library. Your existing snapshots are safe.</p><div class="modal-actions"><button data-close>Keep playing</button><button id="leave-without-save" class="primary">Return to library</button></div>`,()=>{$('#leave-without-save').onclick=()=>{$('#modal').close();leavePlayer(false).catch(report);};});});
-$('#storage-info').onclick=async()=>{const estimate=await navigator.storage?.estimate?.();const persistent=await navigator.storage?.persist?.();notify(estimate?`Using ${bytes(estimate.usage||0)} of about ${bytes(estimate.quota||0)}. ${persistent?'Persistent storage is on.':'Keep backups: your browser may clear this storage.'}`:'This browser can’t report storage usage. Export a backup to keep a copy you can move.');};
+$('#storage-info').onclick=()=>showStorageInfo().catch(report);
 $('#demo').onclick=async()=>{try{const file=await createDemoArchive();await importArchive(file);}catch(e){report(e);}};
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')flush().catch(report);});
-document.addEventListener('vault-native-pause',()=>flush().catch(report));
+document.addEventListener('vault-native-pause',()=>flush().catch(report).finally(()=>window.VaultNative?.storage?.({operation:'backgroundSaveFinished'}).catch(report)));
 window.addEventListener('pagehide',()=>{flush().catch(()=>{});});
 
-try{db=await openVault();await refresh();if('serviceWorker' in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').catch(error=>console.warn('Offline shell unavailable',error));}catch(error){report(error);$('#import').disabled=true;}
+try{db=await openVault();setupStorageHelp();await refresh();if('serviceWorker' in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').catch(error=>console.warn('Offline shell unavailable',error));}catch(error){report(error);$('#import').disabled=true;}

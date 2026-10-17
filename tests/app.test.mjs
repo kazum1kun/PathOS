@@ -33,10 +33,10 @@ async function clickAndWait(element, completed) {
 
 // Exercise the real app handlers and persistence with a DOM implementation. The
 // runtime is a controlled boundary: engine/VFS behavior has separate VM tests.
-async function harness({ installed = [version()], saved = [], runtimeFactory, archiveCandidate = version() } = {}) {
+async function harness({ installed = [version()], saved = [], runtimeFactory, archiveCandidate = version(), navigatorOverrides = {}, native = false } = {}) {
   const { window, document } = parseHTML(await readFile(new URL('public/index.html', root), 'utf8'));
   const previous = new Map();
-  for (const [key, value] of Object.entries({ window, document, navigator: { storage: { persist: async () => true } }, location: { protocol: 'https:' } })) {
+  for (const [key, value] of Object.entries({ window, document, navigator: { storage: { persist: async () => true }, ...navigatorOverrides }, location: { protocol: 'https:' } })) {
     previous.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
   }
@@ -44,6 +44,7 @@ async function harness({ installed = [version()], saved = [], runtimeFactory, ar
   modal.showModal = () => { modal.open = true; };
   modal.close = () => { modal.open = false; };
   const vault = await storageModule.openVault({ indexedDB: new IDBFactory(), name: crypto.randomUUID() });
+  if (native) { vault.storageKind = 'native'; vault.storageInfo = async () => ({ usage: 1024, available: 4096 }); }
   for (const item of installed) await vault.importVersion({ ...game, activeVersionId: item.id }, item);
   for (const item of saved) await vault.putSave(item);
   const players = [];
@@ -231,5 +232,43 @@ test('app imports earlier raw saves and editor bundles after source confirmation
     assert.equal(h.document.querySelector('#legacy-import').disabled, true);
     await h.document.querySelector('#legacy-import').onclick();
     assert.equal((await h.vault.getAll('saves')).length, 2, 'a failed CRC verification must perform no writes');
+  } finally { await h.close(); }
+});
+
+test('iOS web explains Home Screen installation, backup transfer and persistence in storage and help', async () => {
+  const h = await harness({ navigatorOverrides: { userAgent: 'Mozilla iPhone', storage: { persisted: async () => false, persist: async () => false, estimate: async () => ({ usage: 1024, quota: 4096 }) } } });
+  try {
+    assert.equal(h.document.querySelector('#ios-storage-help').hidden, false);
+    h.document.querySelector('#ios-storage-steps').click();
+    assert.match(h.document.querySelector('#modal-body').textContent, /Add to Home Screen/);
+    assert.match(h.document.querySelector('#modal-body').textContent, /Restore backup/);
+    await h.document.querySelector('#storage-info').onclick();
+    assert.match(h.document.querySelector('#modal-body').textContent, /has not been confirmed/);
+    assert.match(h.document.querySelector('#modal-body').textContent, /Add to Home Screen/);
+    h.document.querySelector('#help').click();
+    assert.match(h.document.querySelector('#modal-body').textContent, /Add to Home Screen/);
+  } finally { await h.close(); }
+});
+
+test('installed iPad web apps retain storage instructions without the installation banner', async () => {
+  const h = await harness({ navigatorOverrides: { platform: 'MacIntel', maxTouchPoints: 5, standalone: true, storage: { persisted: async () => true, persist: async () => { throw new Error('Already granted'); } } } });
+  try {
+    assert.equal(h.document.querySelector('#ios-storage-help').hidden, true);
+    await h.document.querySelector('#storage-info').onclick();
+    assert.match(h.document.querySelector('#modal-body').textContent, /Persistent storage is on/);
+    assert.match(h.document.querySelector('#modal-body').textContent, /Add to Home Screen/);
+  } finally { await h.close(); }
+});
+
+test('native storage UI describes durable storage and app deletion, without browser eviction warnings', async () => {
+  const h = await harness({ native: true });
+  try {
+    assert.equal(h.document.querySelector('#ios-storage-help').hidden, true);
+    assert.match(h.document.querySelector('#local-storage-note').textContent, /durable app storage/);
+    await h.document.querySelector('#storage-info').onclick();
+    const text = h.document.querySelector('#modal-body').textContent;
+    assert.match(text, /durable app storage/);
+    assert.match(text, /Deleting the app deletes/);
+    assert.doesNotMatch(text, /browser may clear/);
   } finally { await h.close(); }
 });

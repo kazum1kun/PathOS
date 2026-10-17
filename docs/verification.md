@@ -1,5 +1,11 @@
 # Verification for version 0.1.0
 
+The native-storage update passes 86 automated tests, with one optional private-APK engine test skipped. The additional checks cover automatic native migration, rollback on write/commit failure, retaining the original IndexedDB copy, reopening without resurrecting deleted data, save retention, native JSON key reordering, and portable binary backups. Host UI tests cover the iPhone/iPad Home Screen instructions and native durable-storage status. Syntax checks, web build, Capacitor sync, and injected export/storage bridge verification pass on Windows.
+
+`ios-native/scripts/test-storage.sh` compiles the actual `VaultStore.swift` implementation and runs SQLite/filesystem integration checks on macOS. The native `verify` command runs it automatically on macOS, including in the existing iOS build workflows. This runner, full Swift/iOS compilation, and real-device migration still need macOS/Xcode; they were not run in the Windows workspace.
+
+## Earlier baseline
+
 On 2026-10-16, the automated suite passed all 71 tests, including the optional test against the uploaded DinoKnights engine helpers. The real APK also passed archive inspection, with 21 playable assets and 19 indexed scenes. No commercial game assets are included in this project.
 
 The tests cover:

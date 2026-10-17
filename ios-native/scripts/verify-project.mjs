@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const root = new URL('../', import.meta.url);
 const read = (path) => readFile(new URL(path, root), 'utf8');
@@ -23,12 +25,14 @@ assert.equal(pkg.devDependencies['@capacitor/cli'], '8.5.3');
 assert.ok(scene.includes('VaultBridgeViewController()'));
 assert.ok(storyboard.includes('customClass="VaultBridgeViewController"'));
 assert.equal((project.match(/VaultBridgeViewController.swift in Sources/g) || []).length, 2);
+assert.equal((project.match(/VaultStore.swift in Sources/g) || []).length, 2);
 
 // Execute the actual JS injected by Swift. This verifies promises, cancellation,
 // failure handling and the frame/origin guard without pretending to compile Swift.
-const script = source.match(/private static let exportScript = #"""\n([\s\S]*?)\n    """#/)[1];
+const script = source.match(/private static let exportScript = #"""\r?\n([\s\S]*?)\r?\n    """#/)[1];
 const messages = [];
-const top = {webkit: {messageHandlers: {pathosExport: {postMessage: (payload) => messages.push(payload)}}}};
+const storageMessages = [];
+const top = {webkit: {messageHandlers: {pathosExport: {postMessage: (payload) => messages.push(payload)}, pathosStorage: {postMessage: payload => storageMessages.push(payload)}}}};
 top.top = top;
 const context = vm.createContext({window: top, location: {protocol: 'capacitor:', hostname: 'localhost', port: ''}});
 new vm.Script(script).runInContext(context);
@@ -52,4 +56,21 @@ for (const location of [{protocol: 'https:', hostname: 'example.com'}, {protocol
 const child = {top};
 new vm.Script(script).runInContext(vm.createContext({window: child, location: {protocol: 'capacitor:', hostname: 'localhost', port: ''}}));
 assert.equal(child.VaultNative, undefined);
-console.log('Native project metadata and injected export bridge checks passed. Swift compilation and device checks require Xcode on macOS.');
+const opened = top.VaultNative.storage({operation: 'open'});
+assert.equal(storageMessages[0].operation, 'open');
+top.VaultNative.__settle({id: storageMessages[0].id, ok: true, result: {migrated: true}});
+assert.equal((await opened).migrated, true);
+const storageFailure = top.VaultNative.storage({operation: 'commit', token: 'test'});
+top.VaultNative.__settle({id: storageMessages[1].id, ok: false, error: 'Storage full'});
+await assert.rejects(storageFailure, /Storage full/);
+const missingTransport = top.webkit.messageHandlers.pathosStorage;
+delete top.webkit.messageHandlers.pathosStorage;
+await assert.rejects(top.VaultNative.storage({operation: 'open'}));
+top.webkit.messageHandlers.pathosStorage = missingTransport;
+console.log('Native project metadata and injected export/storage bridge checks passed. Swift compilation and device checks require Xcode on macOS.');
+
+if (process.platform === 'darwin') {
+  const result = spawnSync('bash', [fileURLToPath(new URL('test-storage.sh', import.meta.url))], {stdio: 'inherit', timeout: 60000});
+  if (result.error) throw result.error;
+  assert.equal(result.status, 0, 'Native SQLite/filesystem tests failed.');
+}
