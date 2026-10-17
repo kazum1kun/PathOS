@@ -33,15 +33,19 @@ For a private installation, add authentication at the hosting layer, then test t
 
 The [`Build web app`](../.github/workflows/web.yml) workflow builds on GitHub's standard `ubuntu-24.04` runner with Node.js 22. Push the workflow to the GitHub repository's default branch, then open **Actions → Build web app → Run workflow**, select a branch, and start the run. Leave **Deploy the built website to Cloudflare Pages** unchecked to build without Cloudflare credentials. Download `pathos-web` from the successful run's **Artifacts** section; its ZIP contains the website files ready to serve over HTTPS.
 
-To enable Cloudflare deployment, create a Pages project with Direct Upload (or choose an existing project), then open **Settings → Secrets and variables → Actions** in the GitHub repository and add:
+To enable Cloudflare deployment, open **Settings → Secrets and variables → Actions** in the GitHub repository and add:
 
 | Setting | Type | Value |
 | --- | --- | --- |
 | `CLOUDFLARE_API_TOKEN` | Repository secret | API token with **Account → Cloudflare Pages → Edit** for the project's account |
 | `CLOUDFLARE_ACCOUNT_ID` | Repository variable or secret | The Cloudflare account ID |
-| `CLOUDFLARE_PAGES_PROJECT` | Repository variable | The Pages project name, such as `pathos` |
+| `CLOUDFLARE_PAGES_PROJECT` | Repository variable | The exact Pages project name to create or deploy, such as `pathos` |
 
-Run **Build web app** with the Cloudflare deployment checkbox selected. After checks, tests, and the web build pass, the workflow uploads `dist/` using Wrangler 4. It passes the selected branch and commit to Pages. Match your Pages production branch to your release branch (`main` by default); other branches create previews. The deployed URL appears in the Wrangler log. See Cloudflare's [Direct Upload with CI guide](https://developers.cloudflare.com/pages/how-to/use-direct-upload-with-continuous-integration/).
+Run **Build web app** with the Cloudflare deployment checkbox selected. Leave **Create the configured Pages project if it does not exist** checked for the first deployment. The workflow checks the account's Pages project list and creates a missing project with the repository's default branch as its production branch. Existing projects keep their settings. Disable this option if you only want to deploy to an existing project. Project creation uses the same **Cloudflare Pages → Edit** token permission.
+
+After checks, tests, and the web build pass, the workflow uploads `dist/` using Wrangler 4. It passes the selected branch and commit to Pages. Match your Pages production branch to your release branch (`main` by default); other branches create previews. The deployed URL appears in the Wrangler log. See Cloudflare's [Direct Upload with CI guide](https://developers.cloudflare.com/pages/how-to/use-direct-upload-with-continuous-integration/).
+
+If Wrangler reports **The Pages project "pathos" does not exist**, check that `CLOUDFLARE_ACCOUNT_ID` selects the account you intend and `CLOUDFLARE_PAGES_PROJECT` is the exact project name. A Worker with that name is a separate resource. Push this workflow update and start a new run with project creation enabled, or create a Pages project manually with Direct Upload. Rerunning the original failed run uses its original workflow revision.
 
 The workflow runs manually and keeps build artifacts for seven days. GitHub's standard runners are free for public repositories; private repositories use the account's included minutes and storage. See [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions). A build without the deployment checkbox doesn't need Cloudflare settings.
 
