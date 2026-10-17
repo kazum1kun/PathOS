@@ -89,6 +89,15 @@ export async function prepareRuntimeDocument(version, { token, storage = {}, sta
     if (/css/i.test(file.mime) || /\.css$/i.test(path)) {
       body = rewriteCSS(new TextDecoder().decode(file.bytes), input => resolve(input, path));
     }
+    // The player has an opaque origin. Parent-owned blob scripts can fail to
+    // load in WebKit, and cross-origin classic scripts can hide exceptions as
+    // "Script error." Embedded scripts keep normal parser ordering and global
+    // declarations without depending on the host's http/capacitor blob origin.
+    if (/(?:java|ecma)script/i.test(file.mime) || /\.m?js$/i.test(path)) {
+      const url = 'data:text/javascript;charset=utf-8;base64,' + base64(file.bytes);
+      urls[path] = url; creating.delete(path);
+      return url;
+    }
     const url = URL.createObjectURL(new Blob([body], { type: file.mime }));
     ownedURLs.push(url); urls[path] = url; creating.delete(path);
     return url;
@@ -340,7 +349,17 @@ export function runtimeBootstrap(config) {
     event.preventDefault(); warning('External navigation is unavailable in the isolated player.');
   }, true);
   document.addEventListener('submit', event => { event.preventDefault(); warning('Forms that navigate outside the game are unavailable in the isolated player.'); }, true);
-  window.addEventListener('error', event => { if (event.message) warning('Game error: ' + event.message); });
+  window.addEventListener('error', event => {
+    const script = event.target?.tagName === 'SCRIPT' ? event.target : null;
+    const url = script?.src || event.filename;
+    const path = Object.keys(config.files).find(key => config.files[key].url === url);
+    if (script) {
+      warning('Could not load bundled game script' + (path ? ': ' + path : '.'));
+    } else if (event.message || event.error?.message) {
+      const location = path ? ' (' + path + (event.lineno ? ':' + event.lineno : '') + ')' : '';
+      warning('Game error: ' + (event.error?.message || event.message) + location);
+    }
+  }, true);
   window.addEventListener('unhandledrejection', event => warning('Game error: ' + (event.reason?.message || String(event.reason))));
   window.addEventListener('message', event => {
     const message = event.data;

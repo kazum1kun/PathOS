@@ -31,6 +31,7 @@ function sandbox(config = {}) {
       }
       throw new Error('Timer loop did not settle.');
     },
+    event(type, event) { for (const listener of listeners.get(type) || []) listener(event); },
     message(type, payload, { source = parent, token = 'token-test', id = 1 } = {}) {
       for (const listener of listeners.get('message') || []) listener({ source, data: { channel: 'pathos-runtime-v1', token, type, payload, id } });
     }
@@ -91,11 +92,35 @@ test('prepared game document boots isolation before any game code', async () => 
     assert.ok(result.html.includes("connect-src 'none'"));
     assert.ok(result.html.includes("frame-src 'none'"));
     assert.ok(result.html.includes('\\u003c/script>'));
-    assert.ok(result.html.includes('src="blob:'));
+    assert.ok(result.html.includes('src="data:text/javascript;charset=utf-8;base64,'));
+    assert.ok(result.html.includes('<img src="blob:'));
     assert.ok(!result.html.includes('src="engine.js"'));
     assert.ok(result.html.includes('__pathosFinishLoading();'));
     assert.ok(GAME_CSP.includes("form-action 'none'"));
   } finally { result.dispose(); }
+});
+
+test('bundled scripts embed their original UTF-8 bytes and preserve classic script ordering', async () => {
+  const source = '"use strict"; var label = "\u706f\u53f0 </script>"; function Scene() {}';
+  const result = await prepareRuntimeDocument({ entryPath: 'index.html', files: [
+    { path: 'index.html', mime: 'text/html', data: '<script src="engine.js"></script><script>Scene.started = label;</script>' },
+    { path: 'engine.js', mime: 'text/javascript', data: new TextEncoder().encode(source) }
+  ] });
+  try {
+    const url = result.html.match(/<script src="(data:text\/javascript;[^\"]+)"/)[1];
+    assert.equal(await (await fetch(url)).text(), source);
+    assert.ok(result.html.indexOf('<script src="' + url) < result.html.indexOf('Scene.started = label;'));
+    assert.ok(!result.html.includes(source));
+    assert.ok(result.html.includes("connect-src 'none'"));
+  } finally { result.dispose(); }
+});
+
+test('script errors identify the bundled asset and load failures are reported', () => {
+  const env = sandbox({ files: { 'engine.js': { url: 'data:text/javascript;base64,ZW5naW5l', data: 'ZW5naW5l' } } });
+  env.event('error', { message: 'Uncaught Error: startup failed', error: new Error('startup failed'), filename: 'data:text/javascript;base64,ZW5naW5l', lineno: 12 });
+  env.event('error', { target: { tagName: 'SCRIPT', src: 'data:text/javascript;base64,ZW5naW5l' } });
+  assert.ok(env.messages.some(message => message.payload?.message === 'Game error: startup failed (engine.js:12)'));
+  assert.ok(env.messages.some(message => message.payload?.message === 'Could not load bundled game script: engine.js'));
 });
 
 test('isolated localStorage and Persist remain synchronous/asynchronous as expected', () => {
