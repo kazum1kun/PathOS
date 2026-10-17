@@ -126,6 +126,23 @@ jobs:
         env:
           BUILD_TYPE: ${{ inputs.build_type }}
         run: bash scripts/ci/build-ios.sh "$BUILD_TYPE"
+      - name: Summarize Xcode errors
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          diagnostics = []
+          for log in sorted(Path('build/logs').glob('*.log')):
+              for line in log.read_text(errors='replace').splitlines():
+                  if 'error:' in line:
+                      diagnostics.append(line)
+          if diagnostics:
+              excerpt = '\n'.join(diagnostics[:30])
+              print('Xcode compiler errors:\n' + excerpt)
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+                  summary.write('### Xcode errors\n\n```text\n' + excerpt + '\n```\n')
+          PY
       - name: Upload iOS app
         uses: actions/upload-artifact@v7
         with:

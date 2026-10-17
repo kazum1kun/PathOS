@@ -88,7 +88,7 @@ final class VaultBridgeViewController: CAPBridgeViewController {
         let url = directory.appendingPathComponent(filename, isDirectory: false)
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try data.write(to: url, options: [.atomic, .completeUntilFirstUserAuthentication])
+            try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         } catch {
             try? FileManager.default.removeItem(at: directory)
             reply(requestID, error: error.localizedDescription)
