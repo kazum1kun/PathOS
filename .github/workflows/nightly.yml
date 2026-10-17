@@ -1,0 +1,85 @@
+name: Publish nightly
+
+on:
+  schedule:
+    # 02:17 America/Phoenix (UTC-7), away from the busy start of the hour.
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: Rebuild even if this commit is already published
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-nightly
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check for an unpublished commit
+        id: check
+        uses: actions/github-script@v8
+        env:
+          FORCE_REBUILD: ${{ inputs.force_rebuild || false }}
+        with:
+          script: |
+            const {checkNightly} = await import(`${process.env.GITHUB_WORKSPACE}/scripts/ci/nightly.mjs`);
+            await checkNightly({github, context, core, force: process.env.FORCE_REBUILD === 'true'});
+
+  web:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    uses: ./.github/workflows/web.yml
+    with:
+      deploy_to_cloudflare: false
+
+  ios:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    uses: ./.github/workflows/ios.yml
+    with:
+      build_type: unsigned-ipa
+
+  publish:
+    needs: [check, web, ios]
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Download iOS build
+        uses: actions/download-artifact@v7
+        with:
+          name: pathos-unsigned-ipa
+          path: build/nightly/release
+      - name: Download website
+        uses: actions/download-artifact@v7
+        with:
+          name: pathos-web
+          path: build/nightly/web
+      - name: Package website
+        working-directory: build/nightly/web
+        run: zip -r ../release/PathOS-web.zip .
+      - name: Publish rolling nightly prerelease
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const {publishNightly} = await import(`${process.env.GITHUB_WORKSPACE}/scripts/ci/nightly.mjs`);
+            await publishNightly({github, context, core, directory: 'build/nightly/release'});

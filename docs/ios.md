@@ -69,6 +69,8 @@ The signed build validates the profile, configures signing only on the `App` tar
 
 Device builds set `CURRENT_PROJECT_VERSION` to `github.run_number`. If another build system has already uploaded a higher number, adjust `build_number` in [`scripts/ci/build-ios.sh`](../scripts/ci/build-ios.sh) before uploading. Workflows run manually and artifacts expire after seven days. GitHub's standard runners are free for public repositories; private repositories use the account's included minutes and storage, with macOS consuming more than Linux. See [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
 
+For automatically published unsigned builds on GitHub, see [nightly releases](deployment.md#nightly-releases-on-github). The nightly pipeline calls the same iOS build workflow with `unsigned-ipa` and publishes the result to the rolling `nightly` prerelease after both the iOS and web builds succeed.
+
 ## Build on Codemagic
 
 The repository root includes [`codemagic.yaml`](../codemagic.yaml), following Codemagic's [Capacitor workflow](https://docs.codemagic.io/yaml-quick-start/building-an-ionic-app/). PathOS uses Capacitor and Swift Package Manager, so it doesn't need React Native, Expo, CocoaPods, or a generated Xcode workspace. The shared `App` scheme is checked into the Xcode project for CI builds.

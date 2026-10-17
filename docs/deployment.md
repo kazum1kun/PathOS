@@ -49,6 +49,28 @@ If Wrangler reports **The Pages project "pathos" does not exist**, check that `C
 
 The workflow runs manually and keeps build artifacts for seven days. GitHub's standard runners are free for public repositories; private repositories use the account's included minutes and storage. See [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions). A build without the deployment checkbox doesn't need Cloudflare settings.
 
+## Nightly releases on GitHub
+
+[`Publish nightly`](../.github/workflows/nightly.yml) runs daily at **2:17 a.m. America/Phoenix**, using the UTC cron expression `17 9 * * *`. It builds the latest default-branch commit only when it differs from the published nightly or when release assets are missing. This avoids spending Mac runner minutes rebuilding an unchanged commit. To change the time, edit the cron expression; Phoenix stays at UTC-7 year-round.
+
+To activate it, commit and push `.github/workflows/`, `scripts/ci/nightly.mjs`, its tests, and the documentation to the GitHub repository's default branch. No personal access token, Apple signing secrets, or Cloudflare credentials are needed. The workflow uses GitHub's built-in `GITHUB_TOKEN`, granting `contents: write` only to the release job. Repository or organization policy must allow that job to write releases and update the `nightly` tag.
+
+For the first release, open **Actions → Publish nightly → Run workflow** and select the default branch. **Rebuild even if this commit is already published** forces a fresh build when needed. Otherwise, an already-published commit is skipped. The existing **Build web app** and **Build iOS app** manual workflows remain available.
+
+The nightly pipeline calls those same build workflows, waits for both to succeed, and publishes one rolling prerelease named **Nightly**, with tag `nightly`. Downloads are:
+
+| File | Contents |
+| --- | --- |
+| `PathOS-unsigned.ipa` | iPhone/iPad app; sign it with your sideloading tool before installing |
+| `PathOS-web.zip` | Website files, with `index.html` at the ZIP root; extract and serve over HTTPS |
+| `SHA256SUMS` | SHA-256 checksums of both downloads |
+
+The release is at `https://github.com/OWNER/REPO/releases/tag/nightly`. Stable download links are `https://github.com/OWNER/REPO/releases/download/nightly/PathOS-unsigned.ipa` and `https://github.com/OWNER/REPO/releases/download/nightly/PathOS-web.zip`; replace `OWNER/REPO` with your GitHub repository. Each successful nightly replaces those assets and moves the tag to the build commit. Build failures leave the prior nightly in place. The prerelease doesn't become the repository's latest stable release. Keep this rolling release editable rather than enabling release immutability for it.
+
+Nightly publishing uploads downloads to GitHub Releases. Use **Build web app** with its deployment checkbox to update Cloudflare Pages. Release files remain available until replaced or deleted; temporary Actions artifacts expire after seven days.
+
+GitHub runs schedules from the default branch and may delay scheduled jobs during busy periods. Public repositories' schedules can be disabled after 60 days without activity; re-enable **Publish nightly** in Actions if that happens. See [GitHub's scheduled workflow documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
+
 ## Cloudflare Pages through Codemagic
 
 The `cloudflare-pages` workflow in [`codemagic.yaml`](../codemagic.yaml) runs on Linux with Node.js 22. It installs the web dependencies, runs the checks and tests, builds `dist/`, and deploys that folder with Wrangler 4. Deployment runs only after those steps succeed. See Cloudflare's [Direct Upload with CI guide](https://developers.cloudflare.com/pages/how-to/use-direct-upload-with-continuous-integration/).

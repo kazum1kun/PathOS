@@ -1,6 +1,19 @@
 name: Build web app
 
 on:
+  workflow_call:
+    inputs:
+      deploy_to_cloudflare:
+        type: boolean
+        default: false
+      create_pages_project:
+        type: boolean
+        default: true
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: false
+      CLOUDFLARE_ACCOUNT_ID:
+        required: false
   workflow_dispatch:
     inputs:
       deploy_to_cloudflare:

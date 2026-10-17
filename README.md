@@ -32,6 +32,10 @@ In Xcode, choose your signing team and run the `App` scheme. The project targets
 
 To build in the cloud, use **Actions → Build iOS app → Run workflow** on GitHub and choose an unsigned IPA, simulator app, or signed IPA. See [GitHub Actions setup](docs/ios.md#build-on-github-actions). The root [`codemagic.yaml`](codemagic.yaml) also includes simulator and signed IPA workflows; see [Codemagic setup](docs/ios.md#build-on-codemagic).
 
+## Automatic nightly releases
+
+The [`Publish nightly`](.github/workflows/nightly.yml) workflow checks the default branch daily at **2:17 a.m. Phoenix time** (09:17 UTC). When a new commit is available, it builds the unsigned iOS IPA and website, then updates the `nightly` GitHub prerelease with both downloads and their checksums. Push the workflow to your GitHub default branch to activate the schedule, or run **Actions → Publish nightly → Run workflow** to publish immediately. See [nightly setup and downloads](docs/deployment.md#nightly-releases-on-github).
+
 ## Game updates
 
 Each save belongs to a game in your library and remembers the exact version that created it. Import a newer APK into the same game, and all of its saves stay together. If the update is compatible, PathOS resumes from a migrated copy of your save. If the chapter you were in has changed, you can keep playing on the original version, or replay that chapter from its start if a checkpoint is available. Your original save is never modified.

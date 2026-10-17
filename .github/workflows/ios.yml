@@ -1,6 +1,21 @@
 name: Build iOS app
 
 on:
+  workflow_call:
+    inputs:
+      build_type:
+        type: string
+        default: unsigned-ipa
+      export_method:
+        type: string
+        default: app-store-connect
+    secrets:
+      IOS_CERTIFICATE_BASE64:
+        required: false
+      IOS_CERTIFICATE_PASSWORD:
+        required: false
+      IOS_PROVISIONING_PROFILE_BASE64:
+        required: false
   workflow_dispatch:
     inputs:
       build_type:
