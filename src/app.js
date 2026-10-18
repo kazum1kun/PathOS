@@ -9,7 +9,7 @@ const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid = () => crypto.randomUUID();
 const copy = value => structuredClone(value);
-const date = value => new Date(value).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+const date = value => new Date(value).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',second:'2-digit'});
 // Each game gets a stable book-cloth colour for its spine in the library.
 const SPINES = ['#7a2e26','#2f4a6b','#3d5a3a','#8a6424','#5b3a5e','#2e5d5c','#6b4a2f','#4a4f63'];
 const spine = id => SPINES[[...String(id)].reduce((hash,c)=>(hash*31+c.charCodeAt(0))>>>0,7)%SPINES.length];
@@ -17,6 +17,9 @@ const plural = (count,word) => `${count} ${word}${count===1?'':'s'}`;
 const bytes = value => value > 1024**2 ? `${(value/1024**2).toFixed(1)} MB` : `${Math.ceil(value/1024)} KB`;
 let db, games = [], versions = [], saves = [], selected = null, tab = 'saves';
 let runtime = null, session = null, storage = {}, saveQueue = Promise.resolve(), autoTimer, busy = false, launching = false;
+let selectingSaves = false, selectionGame = null;
+let debugChoices = false;
+const selectedSaves = new Set();
 
 function notify(message,error=false) {
   $('#notice').textContent=message; $('#notice').className=error?'error':''; $('#notice').hidden=false;
@@ -43,17 +46,65 @@ function render() {
   const game=games.find(g=>g.id===selected), installed=versions.filter(v=>v.gameId===selected).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
   const active=installed.find(v=>v.id===game.activeVersionId) || installed[0];
   const gameSaves=saves.filter(s=>s.gameId===selected).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
-  $('#detail').innerHTML=`<div class="detail-head"><div>${game.identity?`<p class="identity">${esc(game.identity)}</p>`:''}<h2>${esc(game.title)}</h2><p class="detail-sub">${esc(active?.label||'No version installed')} · ${installed.length} installed ${installed.length===1?'version':'versions'}</p></div><button class="primary" id="play-new">Start a new playthrough</button></div><div class="tabs" role="tablist"><button role="tab" aria-selected="${tab==='saves'}" class="tab ${tab==='saves'?'active':''}" data-tab="saves">Saves <span class="count">${gameSaves.length}</span></button><button role="tab" aria-selected="${tab==='versions'}" class="tab ${tab==='versions'?'active':''}" data-tab="versions">Versions <span class="count">${installed.length}</span></button></div>${tab==='saves'?`<div class="toolbar"><p>Every version. Every saved path.</p><button id="import-save" class="small-button">Import save</button></div><div class="save-list">${gameSaves.length?gameSaves.map(s=>saveRow(s,active)).join(''):'<div class="no-saves">Your next choice is the first one.<br>Start playing to create automatic snapshots, or save a named one at any time.</div>'}</div>`:`<div class="toolbar"><p>Import updates into this game to keep its saves together.</p><button id="add-version" class="small-button">Import update</button></div><div class="save-list">${installed.map(v=>`<div class="version-row ${v.id===active.id?'is-active':''}"><div><strong>${esc(v.label)} ${v.id===active.id?'<span class="badge">Active</span>':''}</strong><small>Imported ${date(v.createdAt)} · ${bytes(v.files.reduce((n,f)=>n+f.data.length,0))}<br>${Object.keys(v.sceneIndex||{}).length} indexed scenes · ${esc(v.storeName||'No storage ID')}</small></div><div class="row-actions">${v.id!==active.id?button('activate','Make active',`data-id="${esc(v.id)}"`):''}${button('play-version','Start new',`data-id="${esc(v.id)}"`)}</div></div>`).join('')}</div>`}<div class="update-note">Each save stays linked to the version that created it. Before restoring a save on a different version, PathOS checks whether its chapter and return points have changed. If they have, resume it on the original version.</div>`;
+  if(selectionGame!==selected || tab!=='saves'){selectedSaves.clear();selectingSaves=false;selectionGame=selected;}
+  const visibleIds=new Set(gameSaves.map(save=>save.id));
+  for(const id of selectedSaves)if(!visibleIds.has(id))selectedSaves.delete(id);
+  $('#detail').innerHTML=`<div class="detail-head"><div>${game.identity?`<p class="identity">${esc(game.identity)}</p>`:''}<h2>${esc(game.title)}</h2><p class="detail-sub">${esc(active?.label||'No version installed')} · ${installed.length} installed ${installed.length===1?'version':'versions'}</p></div><button class="primary" id="play-new">Start a new playthrough</button></div><div class="tabs" role="tablist"><button role="tab" aria-selected="${tab==='saves'}" class="tab ${tab==='saves'?'active':''}" data-tab="saves">Saves <span class="count">${gameSaves.length}</span></button><button role="tab" aria-selected="${tab==='versions'}" class="tab ${tab==='versions'?'active':''}" data-tab="versions">Versions <span class="count">${installed.length}</span></button></div>${tab==='saves'?`${savesToolbar(gameSaves)}<div class="save-list">${gameSaves.length?gameSaves.map(s=>saveRow(s,active)).join(''):'<div class="no-saves">Your next choice is the first one.<br>Start playing to create automatic snapshots, or save a named one at any time.</div>'}</div>`:`<div class="toolbar"><p>Import updates into this game to keep its saves together.</p><button id="add-version" class="small-button">Import update</button></div><div class="save-list">${installed.map(v=>`<div class="version-row ${v.id===active.id?'is-active':''}"><div><strong>${esc(v.label)} ${v.id===active.id?'<span class="badge">Active</span>':''}</strong><small>Imported ${date(v.createdAt)} · ${bytes(v.files.reduce((n,f)=>n+f.data.length,0))}<br>${Object.keys(v.sceneIndex||{}).length} indexed scenes · ${esc(v.storeName||'No storage ID')}</small></div><div class="row-actions">${v.id!==active.id?button('activate','Make active',`data-id="${esc(v.id)}"`):''}${button('play-version','Start new',`data-id="${esc(v.id)}"`)}</div></div>`).join('')}</div>`}<div class="update-note">Each save stays linked to the version that created it. Before restoring a save on a different version, PathOS checks whether its chapter and return points have changed. If they have, resume it on the original version.</div>`;
   $('#detail').querySelectorAll('[data-tab]').forEach(el=>el.onclick=()=>{tab=el.dataset.tab;render();});
   $('#play-new').onclick=()=>launch(game,active).catch(report);
   $('#import-save')?.addEventListener('click',()=>$('#save-file').click());
   $('#add-version')?.addEventListener('click',()=>{$('#archive-file').dataset.target=selected;$('#archive-file').click();});
+  $('#select-saves')?.addEventListener('click',()=>{selectingSaves=true;selectedSaves.clear();render();});
+  $('#cancel-save-selection')?.addEventListener('click',()=>{selectingSaves=false;selectedSaves.clear();render();});
+  $('#select-all-saves')?.addEventListener('change',event=>{
+    selectedSaves.clear();
+    if(event.target.checked)for(const save of gameSaves)selectedSaves.add(save.id);
+    updateSaveSelection();
+  });
+  $('#delete-selected-saves')?.addEventListener('click',()=>confirmDeleteSaves(gameSaves.filter(save=>selectedSaves.has(save.id))));
+  $('#detail').querySelectorAll('[data-save-select]').forEach(el=>el.onchange=()=>{
+    if(el.checked)selectedSaves.add(el.dataset.saveSelect);else selectedSaves.delete(el.dataset.saveSelect);
+    updateSaveSelection();
+  });
+  updateSaveSelection();
   $('#detail').querySelectorAll('[data-action]').forEach(el=>el.onclick=()=>handleAction(el.dataset.action,el.dataset.id).catch(report));
+}
+function savesToolbar(gameSaves) {
+  if(!selectingSaves)return `<div class="toolbar"><p>Every version. Every saved path.</p><div class="toolbar-actions"><button id="select-saves" class="small-button" ${gameSaves.length?'':'disabled'}>Select saves</button><button id="import-save" class="small-button">Import save</button></div></div>`;
+  return '<div class="toolbar bulk-controls"><label class="select-all"><input id="select-all-saves" type="checkbox">Select all saves</label><span id="save-selection-count" role="status" aria-live="polite">0 selected</span><div class="toolbar-actions"><button id="delete-selected-saves" class="small-button danger" disabled>Delete selected</button><button id="cancel-save-selection" class="small-button">Done</button></div></div>';
+}
+function updateSaveSelection() {
+  if(!selectingSaves)return;
+  const boxes=[...$('#detail').querySelectorAll('[data-save-select]')];
+  for(const box of boxes){box.checked=selectedSaves.has(box.dataset.saveSelect);box.closest('.save-row').classList.toggle('is-selected',box.checked);}
+  const all=$('#select-all-saves');
+  if(all){all.checked=boxes.length>0&&selectedSaves.size===boxes.length;all.indeterminate=selectedSaves.size>0&&selectedSaves.size<boxes.length;}
+  if($('#save-selection-count'))$('#save-selection-count').textContent=`${selectedSaves.size} selected`;
+  if($('#delete-selected-saves'))$('#delete-selected-saves').disabled=selectedSaves.size===0;
+}
+function saveTitle(save) {return save.kind==='auto'?`Autosave · ${save.snapshot.scene.name}`:save.name || 'Untitled save';}
+function confirmDeleteSaves(records) {
+  if(!records.length)return;
+  const gameId=selected, ids=records.map(save=>save.id);
+  if(records.some(save=>save.gameId!==gameId))throw new Error('Choose saves from the current game.');
+  const count=records.length;
+  modal(`<h2>Delete ${count===1?'this snapshot':plural(count,'snapshot')}?</h2><p>This permanently deletes the selected ${count===1?'snapshot':'snapshots'}.</p><ul class="delete-save-list">${records.map(save=>`<li><strong>${esc(saveTitle(save))}</strong><small>${esc(save.snapshot.scene.name)} · line ${save.snapshot.state.lineNum+1} · ${date(save.createdAt)}</small></li>`).join('')}</ul><div class="modal-error" id="delete-error"></div><div class="modal-actions"><button data-close>Cancel</button><button id="delete-confirm" class="primary">Delete ${count===1?'snapshot':plural(count,'snapshot')}</button></div>`,()=>{
+    const confirm=$('#delete-confirm'), error=$('#delete-error');
+    confirm.onclick=async()=>{
+      confirm.disabled=true;error.textContent='';
+      try{
+        const removed=await db.deleteSaves(gameId,ids);
+        selectedSaves.clear();selectingSaves=false;
+        await refresh();$('#modal').close();notify(`${plural(removed,'snapshot')} deleted.`);
+      }catch(e){error.textContent=e.message;confirm.disabled=false;}
+    };
+  });
 }
 function saveRow(save,active) {
   const source=versions.find(v=>v.id===save.versionId), compatibility=assessCompatibility(save,active,source);
   const label=compatibility.status==='exact'?'Matches active version':compatibility.canResume?'Available on active version':'Play on original version';
-  return `<div class="save-row kind-${esc(save.kind||'manual')}"><div><strong>${esc(save.name || 'Untitled save')} ${save.kind==='auto'?'<span class="badge">Auto</span>':''}</strong><small>${esc(save.snapshot.scene.name)} · ${date(save.createdAt)}<br>${esc(source?.label||'Original version missing')}</small><span class="compat ${compatibility.canResume?'':'blocked'}">${label}</span></div><div class="row-actions">${button('resume','Resume',`class="secondary" data-id="${esc(save.id)}"`)}${button('edit','Edit',`data-id="${esc(save.id)}"`)}${button('export','Export',`data-id="${esc(save.id)}"`)}${button('delete','Delete',`class="danger" data-id="${esc(save.id)}"`)}</div></div>`;
+  const automatic=save.kind==='auto', title=saveTitle(save);
+  return `<div class="save-row kind-${esc(save.kind||'manual')}${selectingSaves?' is-selectable':''}">${selectingSaves?`<label class="save-select"><input type="checkbox" data-save-select="${esc(save.id)}" aria-label="${esc(`Select ${title}, ${save.snapshot.scene.name}, line ${save.snapshot.state.lineNum+1}, ${date(save.createdAt)}`)}"></label>`:''}<div class="save-description"><strong>${esc(title)} ${automatic?'<span class="badge">Automatic</span>':''}</strong>${save.snapshot.preview?`<p class="save-preview">${esc(save.snapshot.preview)}</p>`:''}<small>${esc(save.snapshot.scene.name)} · line ${save.snapshot.state.lineNum+1} · ${date(save.createdAt)}<br>${esc(source?.label||'Original version missing')}</small><span class="compat ${compatibility.canResume?'':'blocked'}">${label}</span></div>${selectingSaves?'':`<div class="row-actions">${button('resume','Resume',`class="secondary" data-id="${esc(save.id)}"`)}${button('edit','Edit',`data-id="${esc(save.id)}"`)}${button('export','Export',`data-id="${esc(save.id)}"`)}${button('delete','Delete',`class="danger" data-id="${esc(save.id)}"`)}</div>`}</div>`;
 }
 async function handleAction(action,id) {
   const save=saves.find(s=>s.id===id), game=games.find(g=>g.id===selected), active=versions.find(v=>v.id===game.activeVersionId);
@@ -62,7 +113,7 @@ async function handleAction(action,id) {
   if(action==='edit'){openEditor(save);return;}
   if(action==='export'){await exportFile(`${safeName(game.title)}-${safeName(save.name)}.json`,{format:'story-vault-save',version:1,game:{identity:game.identity,title:game.title},source:{contentHash:versions.find(v=>v.id===save.versionId)?.contentHash},save});return;}
   if(action==='delete'){
-    modal(`<h2>Delete this snapshot?</h2><p>${esc(save.name)} will be deleted. Your other saves and game versions won’t be affected.</p><div class="modal-actions"><button data-close>Cancel</button><button id="delete-confirm" class="primary">Delete snapshot</button></div>`,()=>{$('#delete-confirm').onclick=async()=>{try{await db.delete('saves',id);$('#modal').close();await refresh();}catch(e){report(e);}};});return;
+    confirmDeleteSaves([save]);return;
   }
   if(action==='resume'){
     const source=versions.find(v=>v.id===save.versionId), check=assessCompatibility(save,active,source);
@@ -111,31 +162,48 @@ async function launch(game,version,save) {
   launching=true;$('#leave-player').disabled=true;
   try{
     if(runtime)await leavePlayer();
-    const current={game,version,runId:uid(),lastFingerprint:'',sequence:0};session=current;storage=copy(save?.storage||{});
+    const current={game,version,runId:uid(),lastFingerprint:save?saveFingerprint(save.snapshot,save.storage):'',lastChangeFingerprint:save?saveFingerprint(save.snapshot,save.storage,true):''};session=current;storage=copy(save?.storage||{});
     $('#player').hidden=false;$('#playing-title').textContent=game.title;$('#playing-version').textContent=version.label;$('#save-status').textContent='Opening…';$('#runtime-status').hidden=true;$('#save-now').disabled=true;
+    $('#debug-choices').disabled=true;$('#debug-choices').setAttribute('aria-pressed',String(debugChoices));
     document.body.style.overflow='hidden';
-    runtime=await createRuntime({container:$('#runtime'),version,storage,state:save?.snapshot,
+    runtime=await createRuntime({container:$('#runtime'),version,storage,state:save?.snapshot,debugMode:debugChoices,
       onStorage:value=>{if(session!==current)return;const changed=JSON.stringify(storage)!==JSON.stringify(value);storage=value;if(changed&&current.latestSnapshot){clearTimeout(autoTimer);autoTimer=setTimeout(()=>{if(session===current)enqueueSave(current.latestSnapshot,'auto').catch(report);},650);}},
       onSnapshot:snapshot=>{if(session!==current)return;current.latestSnapshot=snapshot;clearTimeout(autoTimer);autoTimer=setTimeout(()=>{if(session===current)enqueueSave(snapshot,'auto').catch(report);},650);},
       onStatus:status=>{
         if(session!==current)return;
         if(status.level==='error'){$('#runtime-status').textContent=status.message;$('#runtime-status').hidden=false;$('#save-status').textContent='Runtime needs attention';}
-        if(status.level==='ready'){$('#save-now').disabled=false;$('#save-status').textContent='Autosave ready';}
+        if(status.level==='ready'){$('#save-now').disabled=false;$('#debug-choices').disabled=false;$('#save-status').textContent='Autosave ready';}
       }
     });
   }catch(error){await leavePlayer(false);throw error;}
   finally{launching=false;$('#leave-player').disabled=false;}
+}
+function saveFingerprint(snapshot,values={},ignorePosition=false) {
+  // The engine mirrors its current page and stats/backup copies into Persist.
+  // The portable state already represents that progress. Keep the full storage
+  // in saved records, but don't create history entries for those cache writes.
+  const state=copy(snapshot.state);
+  delete state.version;
+  if(ignorePosition){delete state.lineNum;delete state.indent;}
+  if(state.temps)delete state.temps.choice_user_restored;
+  const meaningfulStorage=Object.fromEntries(Object.entries(values).filter(([key])=>!/^persist:.*:(?:state|statetemp|statebackup)$/.test(key)));
+  // Key order can change through native JSON storage. Metadata such as capture
+  // time, previews and recovery checkpoints doesn't constitute new progress.
+  return JSON.stringify({state,storage:meaningfulStorage},(_,value)=>value&&typeof value==='object'&&!Array.isArray(value)?Object.fromEntries(Object.keys(value).sort().map(key=>[key,value[key]])):value);
 }
 function enqueueSave(snapshot,kind='auto',name) {
   const current=session;if(!current)return Promise.resolve();
   const savedStorage=copy(storage);
   saveQueue=saveQueue.catch(()=>{}).then(async()=>{
     if(!snapshot?.state||!snapshot?.scene?.name)throw new Error('This game has no restorable state yet.');
-    const fingerprint=JSON.stringify({state:snapshot.state,storage:savedStorage,checkpoint:snapshot.checkpoint||null});
+    const fingerprint=saveFingerprint(snapshot,savedStorage);
+    const changeFingerprint=saveFingerprint(snapshot,savedStorage,true);
     if(kind==='auto'&&fingerprint===current.lastFingerprint)return;
-    const record={id:uid(),gameId:current.game.id,versionId:current.version.id,name:name||`Auto · ${snapshot.scene.name}`,kind,createdAt:new Date().toISOString(),runId:current.runId,snapshot:copy(snapshot),storage:savedStorage};
+    if(kind==='auto'&&snapshot.transition==='continue'&&changeFingerprint===current.lastChangeFingerprint)return;
+    const record={id:uid(),gameId:current.game.id,versionId:current.version.id,name:name||`Autosave · ${snapshot.scene.name}`,kind,createdAt:new Date().toISOString(),runId:current.runId,snapshot:copy(snapshot),storage:savedStorage};
     await db.putSave(record);
     current.lastFingerprint=fingerprint;
+    current.lastChangeFingerprint=changeFingerprint;
     if(session===current)$('#save-status').textContent=`Saved ${new Date().toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})}`;
   });
   return saveQueue;
@@ -149,6 +217,16 @@ async function leavePlayer(capture=true) {
   if(capture)await flush();
   clearTimeout(autoTimer);runtime?.dispose();runtime=null;session=null;
   $('#player').hidden=true;$('#runtime').replaceChildren();document.body.style.overflow='';await refresh();
+}
+async function toggleChoiceDebug() {
+  const player=runtime,current=session;if(!player||!current)return;
+  const button=$('#debug-choices');button.disabled=true;
+  try{
+    const result=await player.setDebugMode(!debugChoices);
+    if(session!==current)return;
+    debugChoices=result.enabled;button.setAttribute('aria-pressed',String(debugChoices));
+  }catch(error){if(session===current){$('#runtime-status').textContent=error.message;$('#runtime-status').hidden=false;}}
+  finally{if(session===current)button.disabled=false;}
 }
 function manualSave() {
   if(!runtime)return;
@@ -240,6 +318,7 @@ $('#backup-file').onchange=async event=>{const file=event.target.files[0];event.
   modal(`<h2>Restore a library backup</h2><p>This adds ${esc(backup.games?.length??'?')} games and ${esc(backup.saves?.length??'?')} saves to the library on this device. PathOS checks for conflicts before changing anything.</p><div class="modal-error" id="restore-error"></div><div class="modal-actions"><button data-close>Cancel</button><button id="restore-confirm" class="primary">Restore backup</button></div>`,()=>{$('#restore-confirm').onclick=async()=>{try{$('#restore-confirm').disabled=true;await db.restoreBackup(backup);$('#modal').close();await refresh();notify('Backup restored. Games and saves are available on this device.');}catch(e){$('#restore-error').textContent=e.message;$('#restore-confirm').disabled=false;}};});
 }catch(e){report(e);}};
 $('#search').oninput=render;$('#help').onclick=help;$('#save-now').onclick=manualSave;
+$('#debug-choices').onclick=toggleChoiceDebug;
 $('#leave-player').onclick=()=>leavePlayer().catch(error=>{modal(`<h2>No new snapshot was saved</h2><p>${esc(error.message)}</p><p>Wait for the game to finish loading and try again, or return to the library. Your existing snapshots are safe.</p><div class="modal-actions"><button data-close>Keep playing</button><button id="leave-without-save" class="primary">Return to library</button></div>`,()=>{$('#leave-without-save').onclick=()=>{$('#modal').close();leavePlayer(false).catch(report);};});});
 $('#storage-info').onclick=()=>showStorageInfo().catch(report);
 $('#demo').onclick=async()=>{try{const file=await createDemoArchive();await importArchive(file);}catch(e){report(e);}};

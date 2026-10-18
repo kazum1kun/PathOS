@@ -118,3 +118,18 @@ test('native startup failure never falls back to browser storage', async () => {
   assert.deepEqual(await legacy.get('saves', 's'), save);
   legacy.close();
 });
+
+test('native batch deletion rolls back all selected snapshots on a write failure', async () => {
+  const {options,legacy}=await legacyLibrary(),boundary=nativeBoundary();
+  const vault=await openVault({...options,nativeStorage:boundary.bridge});
+  try {
+    await vault.putSave({...save,id:'second'});
+    boundary.fail=request=>request.operation==='delete'&&request.key==='second';
+    await assert.rejects(vault.deleteSaves(game.id,[save.id,'second']),/disk failure/);
+    assert.deepEqual((await vault.getAll('saves')).map(record=>record.id).sort(),['s','second']);
+    boundary.fail=null;
+    assert.equal(await vault.deleteSaves(game.id,[save.id,'second']),2);
+    assert.equal((await vault.getAll('saves')).length,0);
+    assert.equal((await vault.getAll('versions')).length,1);
+  } finally {vault.close();legacy.close();}
+});

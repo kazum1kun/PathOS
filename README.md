@@ -42,9 +42,19 @@ Each save belongs to a game in your library and remembers the exact version that
 
 These are structural checks, so they can't catch every change an author makes to the story's logic. See [save compatibility](docs/save-compatibility.md) for the exact rules and what's supported.
 
+## Debug choices
+
+While playing, turn on **Debug choices** in the reader toolbar to inspect choice conditions and their true/false results. Hidden and disabled options appear with their conditions, including conditional branches and reuse restrictions. Use **Choose** for an available option or **Force-select** to bypass a hidden or disabled option's checks. Forcing a choice can put the story in an invalid state; it does not grant the stats or other requirements the condition checks.
+
+The toggle updates the current choice controls without replaying the page or creating a save. It starts off when PathOS opens and keeps your preference for the current app session. The bundled demo includes hidden and disabled examples. Standard ChoiceScript choice menus are supported; unfamiliar syntax is reported, and conditions that cannot be evaluated show “unknown.”
+
 ## Backups
 
 Export a full JSON backup of your library to move games and saves between a browser and the iOS app. PathOS keeps the 20 most recent automatic saves for each installed version, and keeps manual and edited saves separately. Editing a save always creates a copy. You can also import raw ChoiceScript saves and save bundles from the DinoKnights editor by choosing the installed version they came from. The browser and the iOS app have separate storage, and this release has no cloud sync.
+
+Autosaves record choices, character input, and changes to game state or in-game save slots. Plain “Next” continuations that only move through text do not add snapshots. Opening an existing save, viewing stats, or repeated engine cache writes also do not add duplicates. New snapshots include a short story preview; save rows show the scene, line position, and timestamp to the second.
+
+Choose **Select saves** to select individual snapshots or **Select all saves**, then **Delete selected**. The confirmation lists the chosen snapshots before deleting them together. Saves from other games and installed game versions stay intact.
 
 ## Development
 
@@ -70,3 +80,5 @@ The web build has no install-time dependencies. The ZIP reader is vendored in `s
 | `tests/` | Importer, state, migration, backup, and runtime checks |
 
 To try the app without a game of your own, choose **Explore with a demo** for a short original story. Not every APK will work: the package must contain a complete ChoiceScript web game, and the player can't run Android bytecode or native plugins.
+
+APKs that force Android-app mode use their bundled engine's browser/offline fallbacks in PathOS. Android billing and purchase restoration are unavailable, so games can retain their normal free-content limits even when additional chapters are bundled in the archive.

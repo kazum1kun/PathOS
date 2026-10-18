@@ -1,3 +1,5 @@
+import { inspectChoiceBlock } from './choice-debug.js';
+
 /**
  * Imported games execute in an opaque-origin iframe. Only game state and isolated
  * storage cross its message channel; host/native APIs are never exposed there.
@@ -69,7 +71,7 @@ function base64(bytes) {
 function safeJSON(value) { return JSON.stringify(value).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'); }
 
 /** Exported so security and VFS construction can be tested without a browser. */
-export async function prepareRuntimeDocument(version, { token, storage = {}, state = null } = {}) {
+export async function prepareRuntimeDocument(version, { token, storage = {}, state = null, debugMode = false } = {}) {
   if (!version?.files?.length || !version.entryPath) throw new Error('The selected version has no playable entry page.');
   const files = Object.create(null), urls = Object.create(null), ownedURLs = [];
   for (const file of version.files) {
@@ -91,10 +93,13 @@ export async function prepareRuntimeDocument(version, { token, storage = {}, sta
     }
     // The player has an opaque origin. Parent-owned blob scripts can fail to
     // load in WebKit, and cross-origin classic scripts can hide exceptions as
-    // "Script error." Embedded scripts keep normal parser ordering and global
-    // declarations without depending on the host's http/capacitor blob origin.
-    if (/(?:java|ecma)script/i.test(file.mime) || /\.m?js$/i.test(path)) {
-      const url = 'data:text/javascript;charset=utf-8;base64,' + base64(file.bytes);
+    // "Script error." Host-owned stylesheets can also be blocked, preventing
+    // page animations from completing. Embed both without changing script
+    // ordering, global declarations or the engine's original source.
+    const embeddedMime = /(?:java|ecma)script/i.test(file.mime) || /\.m?js$/i.test(path) ? 'text/javascript'
+      : /css/i.test(file.mime) || /\.css$/i.test(path) ? 'text/css' : null;
+    if (embeddedMime) {
+      const url = 'data:' + embeddedMime + ';charset=utf-8;base64,' + base64(typeof body === 'string' ? new TextEncoder().encode(body) : body);
       urls[path] = url; creating.delete(path);
       return url;
     }
@@ -109,8 +114,8 @@ export async function prepareRuntimeDocument(version, { token, storage = {}, sta
   };
   for (const path of Object.keys(files)) assetURL(path);
   const virtual = Object.fromEntries(Object.values(files).map(file => [file.path, { url: urls[file.path], mime: file.mime, data: base64(file.bytes) }]));
-  const config = { token: token || crypto.randomUUID(), storage, state, entryPath, files: virtual, storeName: version.storeName || version.metadata?.storeName || null };
-  const bootstrap = `<meta http-equiv="Content-Security-Policy" content="${GAME_CSP}"><script>(${runtimeBootstrap.toString()})(${safeJSON(config)});<\/script>`;
+  const config = { token: token || crypto.randomUUID(), storage, state, debugMode, entryPath, files: virtual, storeName: version.storeName || version.metadata?.storeName || null };
+  const bootstrap = `<meta http-equiv="Content-Security-Policy" content="${GAME_CSP}"><script>(${runtimeBootstrap.toString()})(${safeJSON(config)}, ${inspectChoiceBlock.toString()});<\/script>`;
   let html = rewriteGameHTML(new TextDecoder().decode(files[entryPath].bytes), resolve);
   // A malformed export can contain executable tokens before its explicit head.
   // Start the document ourselves so CSP and storage always precede every game
@@ -126,7 +131,7 @@ export async function prepareRuntimeDocument(version, { token, storage = {}, sta
 }
 
 // Serialized into the opaque frame. Keep this function self-contained.
-export function runtimeBootstrap(config) {
+export function runtimeBootstrap(config, inspectChoices) {
   'use strict';
   const channel = 'pathos-runtime-v1', token = config.token;
   const originalPost = parent.postMessage.bind(parent);
@@ -135,6 +140,8 @@ export function runtimeBootstrap(config) {
   let storageTimer, saveTimer, candidate = null, checkpoint = config.state?.checkpoint ? JSON.parse(JSON.stringify(config.state.checkpoint)) : null, lastPublished = '', ready = false, initialStateUsed = false;
   const seenWarnings = new Set(), pendingInitial = config.state?.state || config.state || null;
   const initializedStores = new Set();
+  let transition = null, renderingPageBreak = 0;
+  let debugMode = !!config.debugMode, choiceContext = null, choiceMenu = null;
   const warning = message => { if (!seenWarnings.has(message)) { seenWarnings.add(message); post('status', { level: 'error', message }); } };
   const status = (level, message) => post('status', { level, message });
   const clone = value => JSON.parse(JSON.stringify(value));
@@ -196,6 +203,13 @@ export function runtimeBootstrap(config) {
   // An opaque frame has no native bridge. Explicit calls receive a diagnostic.
   for (const name of ['Capacitor', 'cordova', 'webkit']) {
     try { Object.defineProperty(window, name, { value: undefined, writable: false, configurable: false }); } catch {}
+  }
+  // APK version scripts force native platform flags even inside a browser.
+  // Keep the engine on its own browser/offline paths: the isolated frame has
+  // none of the original app's billing, dialogs, stats or omnibus bridges.
+  // An accessor also tolerates assignments from strict bundled scripts.
+  for (const name of ['isAndroidApp', 'isAmazonAndroidApp', 'isNookAndroidApp', 'isIosApp', 'isOmnibusApp']) {
+    Object.defineProperty(window, name, { configurable: false, get: () => false, set() {} });
   }
   window.alert = message => warning(String(message));
   window.confirm = message => { warning('This game requested a synchronous native confirmation: ' + String(message)); return false; };
@@ -290,7 +304,7 @@ export function runtimeBootstrap(config) {
   }
   function snapshot() {
     if (!candidate) throw new Error('The game has not reached a restorable page yet.');
-    return clone({ format: 'story-vault-state-v1', state: candidate.state, scene: candidate.scene, ...(checkpoint ? { checkpoint } : {}), capturedAt: new Date().toISOString() });
+    return clone({ format: 'story-vault-state-v1', state: candidate.state, scene: candidate.scene, ...(candidate.transition ? { transition: candidate.transition } : {}), ...(candidate.preview ? { preview: candidate.preview } : {}), ...(checkpoint ? { checkpoint } : {}), capturedAt: new Date().toISOString() });
   }
   function publish() {
     clearTimeout(saveTimer);
@@ -298,10 +312,133 @@ export function runtimeBootstrap(config) {
       if (!candidate) return;
       const signature = JSON.stringify(candidate.state);
       if (signature !== lastPublished) { lastPublished = signature; post('snapshot', snapshot()); }
-      if (!ready) { ready = true; status('ready', 'Game ready. Your progress is saved each time a new page opens.'); }
+      if (!ready) { ready = true; status('ready', 'Game ready. Your progress is saved when the story changes.'); }
     }, 140);
   }
+  function restoreChoiceControls(menu) {
+    menu.panel?.remove(); menu.panel = null;
+    for (const [node, display, priority] of menu.controls) {
+      if (display) node.style.setProperty('display', display, priority);
+      else node.style.removeProperty('display');
+    }
+  }
+  function discardChoiceMenu() {
+    if (choiceMenu) restoreChoiceControls(choiceMenu);
+    choiceMenu = null;
+  }
+  function showChoiceDebug(menu) {
+    if (menu !== choiceMenu || !menu.root.isConnected) return;
+    restoreChoiceControls(menu);
+    if (!debugMode) return;
+    let model;
+    try { model = inspectChoices(menu.scene, menu.startLine, menu.groups, menu.options); }
+    catch (error) { warning('Could not inspect these choices: ' + error.message); return; }
+    const panel = document.createElement('section'); panel.className = 'pathos-choice-debug';
+    panel.setAttribute('aria-label', 'Choice debugger');
+    // Scoped styles work with the game's font size and color scheme.
+    const style = document.createElement('style');
+    style.textContent = '.pathos-choice-debug{border:1px solid currentColor;border-radius:6px;padding:16px;margin:16px 0;font:inherit;line-height:1.5}.pathos-choice-debug h2{font:inherit;font-weight:bold;margin:0 0 6px}.pathos-choice-debug p{margin:6px 0 12px}.pathos-choice-debug ul{list-style:none;padding:0;margin:0}.pathos-choice-debug li{border-top:1px solid currentColor;padding:12px 0}.pathos-choice-debug small{display:block;font:inherit;font-size:.85em;opacity:.85}.pathos-choice-debug code{display:block;white-space:pre-wrap;overflow-wrap:anywhere;font-size:.85em}.pathos-choice-debug button{display:block;width:auto;max-width:100%;padding:10px 14px;margin:10px 0 0;border:1px solid currentColor;border-radius:4px;background:transparent;color:inherit;font:inherit;line-height:1.4;cursor:pointer}.pathos-choice-debug button:disabled{opacity:.5}.pathos-choice-debug [data-availability="hidden"],.pathos-choice-debug [data-availability="disabled"]{border-left:3px solid currentColor;padding-left:12px}';
+    panel.appendChild(style);
+    const heading = document.createElement('h2'); heading.textContent = 'Debug choices'; panel.appendChild(heading);
+    const note = document.createElement('p'); note.textContent = 'Force-select bypasses choice conditions and may lead to invalid game state.'; panel.appendChild(note);
+    const list = document.createElement('ul'); panel.appendChild(list);
+    function render(entries, path = []) {
+      for (const entry of entries) {
+        const names = [...path, entry.name];
+        if (entry.children?.length) { render(entry.children, names); continue; }
+        const row = document.createElement('li'); row.dataset.availability = entry.availability;
+        const title = document.createElement('strong'); title.textContent = names.join(' / '); row.appendChild(title);
+        const availability = document.createElement('small');
+        availability.textContent = `${entry.availability === 'hidden' ? 'Hidden' : entry.availability === 'disabled' ? 'Disabled' : 'Available'} · line ${entry.option.line}`;
+        row.appendChild(availability);
+        for (const condition of entry.conditions) {
+          const code = document.createElement('code');
+          code.textContent = `${condition.kind === 'earlier branches' ? 'Earlier branches: ' : '*' + condition.kind + ' '}${condition.expression} → ${condition.result === null ? 'unknown' : condition.result}`;
+          row.appendChild(code);
+        }
+        const choose = document.createElement('button'), forced = entry.availability !== 'available';
+        choose.type = 'button'; choose.textContent = forced ? 'Force-select' : 'Choose';
+        choose.setAttribute('aria-label', `${forced ? 'Force-select' : 'Choose'} ${names.join(' / ')}`);
+        choose.onclick = () => {
+          if (!debugMode || choiceMenu !== menu || !panel.isConnected) return;
+          panel.querySelectorAll('button').forEach(button => { button.disabled = true; });
+          try {
+            if (forced && (menu.scene.temps._fakeChoiceDepth > 0 || menu.scene.getVar?.('implicit_control_flow'))) {
+              menu.scene.temps._choiceEnds ||= {};
+              for (const line of model.boundaries) menu.scene.temps._choiceEnds[line] = model.choiceEnd;
+            }
+            transition = 'choice'; menu.callback(entry.option);
+          } catch (error) { warning('Could not select this choice: ' + error.message); panel.querySelectorAll('button').forEach(button => { button.disabled = false; }); }
+        };
+        row.appendChild(choose); list.appendChild(row);
+      }
+    }
+    render(model.options);
+    for (const text of model.notes) { const detail = document.createElement('p'); detail.textContent = text; panel.appendChild(detail); }
+    if (!list.children.length) return;
+    for (const [node] of menu.controls) node.style.setProperty('display', 'none', 'important');
+    menu.panel = panel; menu.root.appendChild(panel);
+  }
+  function hookChoiceDebug(prototype) {
+    if (typeof inspectChoices !== 'function') return;
+    for (const name of ['choice', 'renderOptions', 'parseOptions']) {
+      const original = prototype[name];
+      if (typeof original !== 'function' || original.__pathosChoiceDebug) continue;
+      const wrapped = name === 'choice' ? function(...args) {
+        const previous = choiceContext;
+        choiceContext = { scene: this, startLine: this.lineNum };
+        try { return original.apply(this, args); } finally { choiceContext = previous; }
+      } : name === 'parseOptions' ? function(...args) {
+        const start = this.lineNum;
+        try { return original.apply(this, args); }
+        catch (error) {
+          // A valid menu can have every option hidden/disabled. Keep it
+          // inspectable in debug mode without suppressing other parse errors.
+          if (!debugMode || choiceContext?.scene !== this || start !== choiceContext.startLine || !/no selectable options/i.test(error.message)) throw error;
+          const model = inspectChoices(this, start, args[1], []);
+          if (!model.options.length) throw error;
+          this.lineNum = model.choiceEnd;
+          const options = entries => entries.map(entry => ({ ...entry.option, unselectable: true, ...(entry.children ? { suboptions: options(entry.children) } : {}) }));
+          return options(model.options);
+        }
+      } : function(groups, options, callback, ...rest) {
+        const context = choiceContext, root = window.main || document.querySelector?.('#main') || document.querySelector?.('#story');
+        const before = root ? new Set(root.querySelectorAll('form')) : null;
+        const result = original.call(this, groups, options, callback, ...rest);
+        if (context?.scene === this && root && !this.secondaryMode && !this.saveSlot) {
+          discardChoiceMenu();
+          const nodes = context.controls || [...root.querySelectorAll('form')].filter(node => !before.has(node));
+          const controls = nodes.filter(node => node.style).map(node => [node, node.style.getPropertyValue('display'), node.style.getPropertyPriority?.('display') || '']);
+          const menu = choiceMenu = { ...context, root, groups, options, callback, controls };
+          if (debugMode) setTimeout(() => showChoiceDebug(menu), 0);
+        }
+        return result;
+      };
+      Object.defineProperty(wrapped, '__pathosChoiceDebug', { value: true }); prototype[name] = wrapped;
+    }
+  }
   function hookEngine() {
+    // Track the engine action, not the button caption: "Next" can also submit
+    // a choice or character input. Custom page-break captions are continuations.
+    for (const [name, callbackIndex] of [['printOptions', 2], ['printInput', 2], ['printButton', 3]]) {
+      const original = window[name];
+      if (typeof original !== 'function' || original.__pathosInteraction) continue;
+      const wrapped = function(...args) {
+        const callback = args[callbackIndex];
+        const kind = name === 'printButton' ? (renderingPageBreak ? 'continue' : null) : 'choice';
+        if (kind && typeof callback === 'function') args[callbackIndex] = function(...values) {
+          transition = kind;
+          return callback.apply(this, values);
+        };
+        const context = name === 'printOptions' ? choiceContext : null, root = window.main;
+        const before = context && root ? new Set(root.childNodes) : null;
+        const result = original.apply(this, args);
+        if (before) context.controls = [...root.childNodes].filter(node => !before.has(node));
+        return result;
+      };
+      Object.defineProperty(wrapped, '__pathosInteraction', { value: true });
+      window[name] = wrapped;
+    }
     // Author exports may intentionally omit storeName and disable Persist.
     // Their existing loader still calls restoreGame(null): pass the selected
     // portable snapshot to that first call without inventing a store namespace.
@@ -318,21 +455,38 @@ export function runtimeBootstrap(config) {
       window.restoreGame = restore;
     }
     const prototype = window.Scene?.prototype;
-    if (!prototype || prototype.__pathosHooked) return;
+    if (!prototype) return;
+    hookChoiceDebug(prototype);
+    const pageBreak = prototype.page_break;
+    if (typeof pageBreak === 'function' && !pageBreak.__pathosInteraction) {
+      const wrapped = function(...args) {
+        renderingPageBreak++;
+        try { return pageBreak.apply(this, args); }
+        finally { renderingPageBreak--; }
+      };
+      Object.defineProperty(wrapped, '__pathosInteraction', { value: true });
+      prototype.page_break = wrapped;
+    }
+    if (prototype.__pathosHooked) return;
     const original = prototype.printLoop;
     if (typeof original !== 'function') return;
     Object.defineProperty(prototype, '__pathosHooked', { value: true });
     prototype.printLoop = function(...args) {
       const main = !this.secondaryMode && !this.saveSlot && this.name !== 'choicescript_stats' && this.name !== 'choicescript_upgrade';
       if (main) {
+        discardChoiceMenu();
         try {
           const state = decodeEngineState(this);
-          candidate = { state, scene: currentScene(state) };
+          candidate = { state, scene: currentScene(state), transition };
           if (this.lineNum === 0 && !(state.stats.choice_subscene_stack?.length)) checkpoint = { ...clone(candidate), atSceneStart: true };
         } catch (error) { warning('Could not capture this page: ' + error.message); }
       }
       const result = original.apply(this, args);
-      if (main) publish();
+      if (main) {
+        const root = document.querySelector?.('#container1 #main') || document.querySelector?.('#main') || document.querySelector?.('#story') || document.querySelector?.('main');
+        if (candidate && root) candidate.preview = String(root.innerText || root.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 180);
+        publish();
+      }
       return result;
     };
   }
@@ -348,7 +502,13 @@ export function runtimeBootstrap(config) {
     if (!href || href.startsWith('#') || /^javascript:/i.test(href)) return;
     event.preventDefault(); warning('External navigation is unavailable in the isolated player.');
   }, true);
-  document.addEventListener('submit', event => { event.preventDefault(); warning('Forms that navigate outside the game are unavailable in the isolated player.'); }, true);
+  // Let the engine's form handler run first. Handled local inputs already
+  // cancel submission; only an attempted default navigation needs a warning.
+  document.addEventListener('submit', event => {
+    const handled = event.defaultPrevented;
+    event.preventDefault();
+    if (!handled) warning('Forms that navigate outside the game are unavailable in the isolated player.');
+  });
   window.addEventListener('error', event => {
     const script = event.target?.tagName === 'SCRIPT' ? event.target : null;
     const url = script?.src || event.filename;
@@ -367,6 +527,11 @@ export function runtimeBootstrap(config) {
     try {
       if (message.type === 'capture') {
         post('storage', clone(values)); post('result', { snapshot: snapshot(), storage: clone(values) }, message.id);
+      } else if (message.type === 'debug') {
+        if (typeof inspectChoices !== 'function' || typeof window.Scene?.prototype.choice !== 'function' || typeof window.Scene?.prototype.renderOptions !== 'function') throw new Error('Choice debugging is unavailable for this game engine.');
+        debugMode = !!message.payload?.enabled;
+        if (choiceMenu) showChoiceDebug(choiceMenu);
+        post('result', { enabled: debugMode }, message.id);
       } else if (message.type === 'restore') {
         const state = clone(message.payload?.state || message.payload);
         if (!state?.stats?.sceneName || !state.temps || !Number.isInteger(state.lineNum)) throw new Error('Invalid ChoiceScript save.');
@@ -382,12 +547,15 @@ export function runtimeBootstrap(config) {
   status('info', 'Loading bundled game assets.');
 }
 
-export async function createRuntime({ container, version, storage = {}, state = null, onSnapshot = () => {}, onStorage = () => {}, onStatus = () => {} }) {
+export async function createRuntime({ container, version, storage = {}, state = null, debugMode = false, onSnapshot = () => {}, onStorage = () => {}, onStatus = () => {} }) {
   if (!container) throw new Error('A player container is required.');
-  const prepared = await prepareRuntimeDocument(version, { storage, state });
+  const prepared = await prepareRuntimeDocument(version, { storage, state, debugMode });
   const iframe = document.createElement('iframe');
   iframe.className = 'game-frame'; iframe.title = version.title || 'ChoiceScript game';
-  iframe.setAttribute('sandbox', 'allow-scripts'); iframe.setAttribute('referrerpolicy', 'no-referrer');
+  // ChoiceScript's text/number inputs use local submit handlers. allow-forms
+  // permits those events; CSP form-action 'none' and the runtime submit guard
+  // still prevent native form navigation, including submissions via form.submit().
+  iframe.setAttribute('sandbox', 'allow-scripts allow-forms'); iframe.setAttribute('referrerpolicy', 'no-referrer');
   iframe.setAttribute('allow', "camera 'none'; microphone 'none'; geolocation 'none'; payment 'none'; usb 'none'; clipboard-read 'none'; clipboard-write 'none'");
   const waiting = new Map(); let sequence = 0, disposed = false, latestStorage = { ...storage };
   const listener = event => {
@@ -416,6 +584,7 @@ export async function createRuntime({ container, version, storage = {}, state = 
     iframe,
     async capture() { const result = await request('capture'); latestStorage = result.storage; onStorage(result.storage); return result.snapshot; },
     restore(value) { return request('restore', value); },
+    setDebugMode(enabled) { return request('debug', { enabled: !!enabled }); },
     getStorage() { return { ...latestStorage }; },
     dispose() { disposed = true; window.removeEventListener('message', listener); iframe.remove(); prepared.dispose();
       for (const task of waiting.values()) { clearTimeout(task.timer); task.reject(new Error('The player was closed.')); } waiting.clear(); }

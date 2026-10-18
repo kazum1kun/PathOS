@@ -56,6 +56,23 @@ test('save identities are immutable and ownership is checked', async () => {
   vault.close();
 });
 
+test('batch deletion is scoped to a game and retains all records on an invalid selection', async () => {
+  const vault=await openVault({indexedDB:new IDBFactory()});
+  const {game,version,save}=fixture();
+  try {
+    await vault.importVersion(game,version);
+    await vault.putSaves([save,{...save,id:'automatic',kind:'auto'}]);
+    await vault.importVersion({...game,id:'other',activeVersionId:'other-version'},{...version,id:'other-version',gameId:'other'});
+    await vault.putSave({...save,id:'other-save',gameId:'other',versionId:'other-version'});
+    await assert.rejects(vault.deleteSaves(game.id,[save.id,'other-save']),/different game/);
+    assert.equal((await vault.getAll('saves')).length,3);
+    assert.equal(await vault.deleteSaves(game.id,[save.id,save.id,'missing']),1);
+    assert.deepEqual((await vault.getAll('saves')).map(record=>record.id).sort(),['automatic','other-save']);
+    assert.equal((await vault.getAll('versions')).length,2);
+    assert.equal(await vault.deleteSaves(game.id,[]),0);
+  } finally {vault.close();}
+});
+
 test('batch save imports commit together and roll back on one unrelated version', async () => {
   const vault = await openVault({ indexedDB: new IDBFactory() });
   const { game, version, save } = fixture(); await vault.importVersion(game, version);

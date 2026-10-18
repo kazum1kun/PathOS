@@ -158,6 +158,21 @@ export function createVault(transact, storageKind = 'browser') {
       return transact([store], 'readwrite', async tx => { await tx.put(store, record); return record; });
     },
     delete: (store, key) => transact([store], 'readwrite', tx => tx.delete(store, key)),
+    deleteSaves(gameId, ids) {
+      if(typeof gameId!=='string'||!gameId.trim()||!Array.isArray(ids)||ids.some(id=>typeof id!=='string'||!id.trim()))throw new Error('Choose saves from one game to delete.');
+      const unique=[...new Set(ids)];
+      if(!unique.length)return Promise.resolve(0);
+      return transact(['saves'],'readwrite',async tx=>{
+        const existing=[];
+        for(const id of unique){
+          const record=await tx.get('saves',id);
+          if(record&&record.gameId!==gameId)throw new Error('The selected saves belong to a different game.');
+          if(record)existing.push(id);
+        }
+        for(const id of existing)await tx.delete('saves',id);
+        return existing.length;
+      });
+    },
     importVersion(game, version) {
       validateRecord('games', game); validateRecord('versions', version);
       if (version.gameId !== game.id) throw new Error('The version belongs to a different game.');

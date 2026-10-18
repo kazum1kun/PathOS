@@ -2,12 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
-import { normalizeAssetPath, rewriteGameHTML, prepareRuntimeDocument, runtimeBootstrap, GAME_CSP } from '../src/runtime.js';
+import { parseHTML } from 'linkedom';
+import { normalizeAssetPath, rewriteGameHTML, prepareRuntimeDocument, runtimeBootstrap, createRuntime, GAME_CSP } from '../src/runtime.js';
+import { inspectChoiceBlock } from '../src/choice-debug.js';
 
-function sandbox(config = {}) {
+function sandbox(config = {}, domDocument = null) {
   const messages = [], listeners = new Map(), timers = new Map(); let nextTimer = 0;
   class Element { setAttribute(name, value) { this[name] = value; } }
-  const document = { querySelectorAll: () => [], addEventListener(name, fn) { const list = listeners.get('doc:' + name) || []; list.push(fn); listeners.set('doc:' + name, list); } };
+  const document = domDocument || { querySelectorAll: () => [], addEventListener(name, fn) { const list = listeners.get('doc:' + name) || []; list.push(fn); listeners.set('doc:' + name, list); } };
   const parent = { postMessage(message) { messages.push(JSON.parse(JSON.stringify(message))); } };
   const context = {
     console, Event, EventTarget, Response, Blob, Uint8Array, TextDecoder, TextEncoder, Object, JSON,
@@ -19,7 +21,7 @@ function sandbox(config = {}) {
   };
   context.window = context;
   vm.createContext(context);
-  vm.runInContext(`(${runtimeBootstrap.toString()})(${JSON.stringify({ token: 'token-test', files: {}, storage: {}, entryPath: 'index.html', ...config })})`, context);
+  vm.runInContext(`(${runtimeBootstrap.toString()})(${JSON.stringify({ token: 'token-test', files: {}, storage: {}, entryPath: 'index.html', ...config })}, ${inspectChoiceBlock.toString()})`, context);
   return {
     context, messages, parent,
     run(source) { return vm.runInContext(source, context); },
@@ -123,6 +125,23 @@ test('script errors identify the bundled asset and load failures are reported', 
   assert.ok(env.messages.some(message => message.payload?.message === 'Could not load bundled game script: engine.js'));
 });
 
+test('stylesheets and their imports embed with rewritten local asset URLs', async () => {
+  const result = await prepareRuntimeDocument({ entryPath: 'index.html', files: [
+    { path: 'index.html', mime: 'text/html', data: '<link rel="stylesheet" href="style.css">' },
+    { path: 'style.css', mime: 'text/css', data: '@import "theme.css"; body { background-image: url("cover.png"); }' },
+    { path: 'theme.css', mime: 'text/css', data: 'body::before { content: "\u706f\u53f0"; }' },
+    { path: 'cover.png', mime: 'image/png', data: new Uint8Array([1, 2, 3]) }
+  ] });
+  try {
+    const url = result.html.match(/<link rel="stylesheet" href="([^"]+)"/)[1];
+    assert.ok(url.startsWith('data:text/css;charset=utf-8;base64,'));
+    const css = await (await fetch(url)).text();
+    const theme = css.match(/@import "([^"]+)"/)[1];
+    assert.equal(await (await fetch(theme)).text(), 'body::before { content: "\u706f\u53f0"; }');
+    assert.match(css, /url\("blob:/);
+  } finally { result.dispose(); }
+});
+
 test('isolated localStorage and Persist remain synchronous/asynchronous as expected', () => {
   const env = sandbox({ storage: { 'local:previous': 'value' }, state: { stats: { sceneName: 'chapter' }, temps: {}, lineNum: 4, indent: 0 } });
   env.run(`window.storeName='title'; window.store = new Persist.Store('title'); window.first=store.get('state'); localStorage.gold=20; localStorage.setItem('x','y'); store.set('achieved','x', function(ok) { window.callbackOK=ok; });`);
@@ -150,6 +169,67 @@ test('VFS fetch and XHR read local scene assets while network is unavailable', a
   assert.equal(env.context.xhr.status, 200);
   assert.equal(env.context.xhr.responseText, 'A bundled scene');
   assert.ok(env.messages.some(message => message.type === 'status' && /network resource/.test(message.payload.message)));
+});
+
+test('APK platform flags select the bundled engine browser fallbacks without native bridges', () => {
+  const env = sandbox();
+  env.run(`
+    'use strict';
+    window.isAndroidApp = true;
+    window.isAmazonAndroidApp = true;
+    window.isNookAndroidApp = true;
+    window.isIosApp = true;
+    window.isOmnibusApp = true;
+    // Representative engine dispatch, including its asynchronous purchase result.
+    function checkPurchase(callback) {
+      if (window.isAndroidApp) androidBilling.checkPurchase('adfree');
+      else if (window.isIosApp) webkit.messageHandlers.choicescript.postMessage('checkpurchase');
+      else setTimeout(() => callback({adfree: false, billingSupported: false}), 0);
+    }
+    checkPurchase(value => { window.purchaseResult = value; });
+    window.statsPath = window.isAndroidApp ? statsMode.get() : 'browser';
+  `);
+  assert.equal(env.context.purchaseResult, undefined);
+  env.flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(env.context.purchaseResult)), { adfree: false, billingSupported: false });
+  assert.equal(env.context.statsPath, 'browser');
+  for (const name of ['isAndroidApp', 'isAmazonAndroidApp', 'isNookAndroidApp', 'isIosApp', 'isOmnibusApp']) assert.equal(env.context[name], false);
+  assert.equal(env.context.androidBilling, undefined);
+  assert.equal(env.context.webkit, undefined);
+});
+
+test('player permits local submit handlers while preventing form navigation and origin access', async () => {
+  const originalWindow = globalThis.window, originalDocument = globalThis.document;
+  const { window, document } = parseHTML('<div id="player"></div>');
+  globalThis.window = window; globalThis.document = document;
+  let runtime;
+  try {
+    runtime = await createRuntime({ container: document.getElementById('player'), version: {
+      entryPath: 'index.html', files: [{ path: 'index.html', data: '<form><input name="name"><button>Next</button></form>', mime: 'text/html' }]
+    } });
+    const flags = runtime.iframe.getAttribute('sandbox').split(' ');
+    assert.ok(flags.includes('allow-forms'));
+    assert.ok(flags.includes('allow-scripts'));
+    assert.ok(!flags.includes('allow-same-origin'));
+    assert.ok(!flags.includes('allow-top-navigation'));
+    assert.ok(runtime.iframe.srcdoc.includes("form-action 'none'"));
+    assert.ok(runtime.iframe.srcdoc.includes("connect-src 'none'"));
+  } finally {
+    runtime?.dispose();
+    if (originalWindow === undefined) delete globalThis.window; else globalThis.window = originalWindow;
+    if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument;
+  }
+});
+
+test('handled game inputs do not warn while unhandled form navigation is cancelled', () => {
+  const env = sandbox();
+  let prevented = 0;
+  env.event('doc:submit', { defaultPrevented: true, preventDefault() { prevented++; } });
+  assert.equal(prevented, 1);
+  assert.ok(!env.messages.some(message => message.payload?.level === 'error'));
+  env.event('doc:submit', { defaultPrevented: false, preventDefault() { prevented++; } });
+  assert.equal(prevented, 2);
+  assert.ok(env.messages.some(message => /Forms that navigate/.test(message.payload?.message)));
 });
 
 test('snapshots preserve page-start state and restore without double applying page effects', () => {
@@ -183,6 +263,105 @@ test('stats views cannot replace main progress; forged postMessages are ignored'
   const captured = env.messages.find(message => message.id === 68).payload.snapshot;
   assert.equal(captured.scene.name, 'chapter');
   assert.equal(captured.state.stats.sceneName, 'chapter');
+});
+
+test('snapshots describe the visible story page and stats cannot replace its preview', () => {
+  const env = sandbox();
+  env.run(miniEngine);
+  env.run(`document.querySelector = () => ({innerText:'A light on the shore.\\nChoose your next path.'}); stats.scene = new Scene('chapter', stats); stats.scene.printLoop();`);
+  env.flush();
+  const original = env.messages.findLast(message => message.type === 'snapshot').payload;
+  assert.equal(original.preview, 'A light on the shore. Choose your next path.');
+  env.run(`document.querySelector = () => ({innerText:'Strength: 10'}); var statsView = new Scene('choicescript_stats', stats); statsView.secondaryMode='stats'; statsView.printLoop();`);
+  env.message('capture', null, { id: 77 });
+  assert.equal(env.messages.findLast(message => message.id === 77).payload.snapshot.preview, original.preview);
+});
+
+test('page-break callbacks mark continuations while choices and text input mark decisions', () => {
+  const env=sandbox();env.run(miniEngine);
+  env.run(`
+    window.printButton=function(label,target,isSubmit,callback){window.nextCallback=callback;};
+    window.printOptions=function(groups,options,callback){window.choiceCallback=callback;};
+    window.printInput=function(target,options,callback){window.inputCallback=callback;};
+    Scene.prototype.page_break=function(label){printButton(label,null,false,()=>{this.lineNum++;this.printLoop();});};
+    window.__pathosFinishLoading();
+    stats.scene=new Scene('chapter',stats);stats.scene.printLoop();
+    stats.scene.page_break('Continue reading');window.nextCallback();
+  `);
+  env.flush();
+  assert.equal(env.messages.findLast(message=>message.type==='snapshot').payload.transition,'continue');
+  env.run(`printOptions([],[],()=>{stats.scene.lineNum++;stats.scene.printLoop();});window.choiceCallback({});`);
+  env.flush();
+  assert.equal(env.messages.findLast(message=>message.type==='snapshot').payload.transition,'choice');
+  env.run(`printInput(null,{},value=>{stats.name=value;stats.scene.lineNum++;stats.scene.printLoop();});window.inputCallback('Alex');`);
+  env.flush();
+  assert.equal(env.messages.findLast(message=>message.type==='snapshot').payload.transition,'choice');
+  assert.equal(env.messages.findLast(message=>message.type==='snapshot').payload.state.stats.name,'Alex');
+});
+
+const debugChoiceSource = ['*fake_choice', '  *if (strong) #Hidden path', '    hidden outcome', '  *selectable_if (ready) #Guarded path', '    guarded outcome', '  #Open path', '    open outcome', 'Afterwards'];
+const debugChoiceEngine = `
+  window.stats={strong:false,ready:false};window.main=document.getElementById('main');
+  function Scene(){this.name='chapter';this.stats=stats;stats.scene=this;stats.sceneName=this.name;this.lines=${JSON.stringify(debugChoiceSource)};this.temps={choice_reuse:'allow',_fakeChoiceDepth:1,_choiceEnds:{}};this.lineNum=0;this.indent=0;}
+  Scene.prototype.getIndent=function(line){this.checkedIndent=true;return /^\\s*/.exec(line||'')[0].length;};
+  Scene.prototype.tokenizeExpr=function(value){return value;};
+  Scene.prototype.evaluateExpr=function(value){return this.stats[value];};
+  Scene.prototype.replaceVariables=function(value){return value;};
+  Scene.prototype.getVar=function(value){return this.stats[value]||false;};
+  Scene.prototype.parseOptions=function(){if(window.syntaxError)throw new Error('Invalid indent');if(window.emptyMenu)throw new Error('No selectable options');this.lineNum=6;return [{name:'Guarded path',line:4,unselectable:true},{name:'Open path',line:6}];};
+  window.printOptions=function(groups,options,callback){var form=document.createElement('form');main.appendChild(form);options.forEach(option=>{var button=document.createElement('button');button.textContent=option.name;button.disabled=!!option.unselectable;button.onclick=()=>callback(option);form.appendChild(button);});var next=document.createElement('button');next.id='original-next';next.textContent='Next';main.appendChild(next);};
+  Scene.prototype.renderOptions=function(groups,options,callback){printOptions(groups,options,callback);};
+  Scene.prototype.choice=function(){var start=this.lineNum,options=this.parseOptions(0,['']);this.renderOptions([''],options,option=>this.standardResolution(option));this.lineNum=start;};
+  Scene.prototype.standardResolution=function(option){this.lineNum=option.line;this.printLoop();};
+  Scene.prototype.printLoop=function(){main.textContent='';if(this.lineNum===0){this.choice('');}else{this.stats.outcome=this.lines[this.lineNum].trim();main.textContent=this.stats.outcome;}};
+  function computeCookie(stats,temps,lineNum,indent){var clean={...stats};delete clean.scene;return JSON.stringify({stats:clean,temps,lineNum,indent});}
+  window.__pathosFinishLoading();stats.scene=new Scene();stats.scene.printLoop();
+`;
+
+test('debug mode reveals conditions and force-selects a hidden option through the engine without changing eligibility', () => {
+  const {document}=parseHTML('<main id="main"></main>'), env=sandbox({},document);
+  env.run(debugChoiceEngine);env.flush();
+  const initial=JSON.parse(JSON.stringify(env.context.stats.scene.temps)), form=document.querySelector('form');
+  assert.equal(document.querySelector('.pathos-choice-debug'),null);
+  env.message('debug',{enabled:true},{source:{},id:100});
+  assert.equal(document.querySelector('.pathos-choice-debug'),null,'other windows cannot enable debugging');
+  env.message('debug',{enabled:true},{id:101});
+  const panel=document.querySelector('.pathos-choice-debug');
+  assert.match(panel.textContent,/\*if strong → false/);
+  assert.match(panel.textContent,/\*selectable_if ready → false/);
+  assert.equal(panel.querySelectorAll('[data-availability="hidden"]').length,1);
+  assert.equal(panel.querySelectorAll('[data-availability="disabled"]').length,1);
+  assert.equal(form.style.display,'none');
+  assert.equal(document.getElementById('original-next').style.display,'none','submit controls outside the form are hidden too');
+  assert.equal(env.context.stats.scene.lineNum,0);
+  assert.equal(env.context.stats.scene.checkedIndent,undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(env.context.stats.scene.temps)),initial);
+  env.message('debug',{enabled:false},{id:102});
+  assert.equal(document.querySelector('.pathos-choice-debug'),null);
+  assert.notEqual(form.style.display,'none');
+  assert.notEqual(document.getElementById('original-next').style.display,'none');
+  env.message('debug',{enabled:true},{id:103});
+  document.querySelector('[aria-label="Force-select Hidden path"]').click();env.flush();
+  assert.equal(env.context.stats.outcome,'hidden outcome');
+  assert.equal(env.context.stats.strong,false,'forcing chooses the body without granting the condition');
+  assert.equal(env.context.stats.scene.temps._choiceEnds[3],6,'hidden fake-choice exits skip the other option bodies');
+  assert.equal(document.querySelector('.pathos-choice-debug'),null,'old force buttons are removed after progression');
+  const saved=env.messages.findLast(message=>message.type==='snapshot').payload;
+  assert.equal(saved.transition,'choice');assert.equal(saved.state.lineNum,2);
+});
+
+test('debug mode force-selects disabled choices and handles a menu with no selectable options', () => {
+  for(const emptyMenu of [false,true]){
+    const {document}=parseHTML('<main id="main"></main>'),env=sandbox({debugMode:true},document);
+    env.context.emptyMenu=emptyMenu;
+    env.run(debugChoiceEngine);env.flush();
+    document.querySelector('[aria-label="Force-select Guarded path"]').click();env.flush();
+    assert.equal(env.context.stats.outcome,'guarded outcome');
+    assert.equal(env.context.stats.ready,false);
+  }
+  const {document}=parseHTML('<main id="main"></main>'),env=sandbox({debugMode:true},document);
+  env.context.syntaxError=true;
+  assert.throws(()=>env.run(debugChoiceEngine),/Invalid indent/,'debug mode must not suppress unrelated engine errors');
 });
 
 test('real APK ChoiceScript computeCookie and restoreGame integrate with boundary capture', { skip: !process.env.PATHOS_APK_HTML }, async () => {

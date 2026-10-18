@@ -53,6 +53,7 @@ async function harness({ installed = [version()], saved = [], runtimeFactory, ar
     const player = {
       options, state: structuredClone(options.state || snapshot()), values: structuredClone(options.storage), disposed: false,
       capture: async () => { options.onStorage(structuredClone(player.values)); return structuredClone(player.state); },
+      setDebugMode: async enabled => { player.debugMode=enabled; return {enabled}; },
       dispose: () => { player.disposed = true; },
     };
     players.push(player);
@@ -100,6 +101,183 @@ test('app keeps storage-only changes and prevents old callbacks saving into anot
     assert.ok(!all.some(record => record.snapshot.state.stats.strength === 999));
     assert.ok(!all.some(record => record.storage.stale));
   } finally { await h.close(); }
+});
+
+test('choice debug toggle controls the active runtime without adding saves and keeps the session preference', async () => {
+  const original=save(), h=await harness({saved:[original]});
+  try{
+    await h.app.handleAction('resume',original.id);
+    const button=h.document.querySelector('#debug-choices');
+    assert.equal(button.disabled,false);
+    await clickAndWait(button,()=>button.getAttribute('aria-pressed')==='true');
+    assert.equal(h.players[0].debugMode,true);
+    await h.app.flush();
+    assert.equal((await h.vault.getAll('saves')).length,1);
+    await h.app.leavePlayer();await h.app.handleAction('resume',original.id);
+    assert.equal(h.players[1].options.debugMode,true);
+    h.players[1].setDebugMode=async()=>{throw new Error('Choice debugging is unavailable for this game engine.');};
+    await clickAndWait(button,()=>!h.document.querySelector('#runtime-status').hidden);
+    assert.match(h.document.querySelector('#runtime-status').textContent,/unavailable/);
+    assert.equal(button.disabled,false);
+    assert.equal(button.getAttribute('aria-pressed'),'true','a failed toggle retains the last working mode');
+  }finally{await h.close();}
+});
+
+test('resuming an autosave does not save again for key ordering, engine caches or restore metadata', async () => {
+  const original = { ...save(), kind: 'auto' };
+  const h = await harness({ saved: [original] });
+  try {
+    await h.app.handleAction('resume', original.id);
+    const player = h.players[0];
+    player.state.state.stats = { strength: 6, sceneName: 'chapter1' };
+    player.state.state.version = 'engine-build-metadata';
+    player.state.state.temps.choice_user_restored = true;
+    player.state.capturedAt = '2026-10-17T12:00:00.000Z';
+    player.state.preview = 'The restored page';
+    delete player.state.checkpoint;
+    player.values['persist:small-story:state'] = 'engine page cache';
+    player.values['persist:small-story:statetemp'] = 'stats screen cache';
+    player.values['persist:small-story:statebackup'] = 'engine backup cache';
+    player.options.onSnapshot(structuredClone(player.state));
+    await h.app.flush();
+    await h.app.leavePlayer();
+    assert.deepEqual(await h.vault.getAll('saves'), [original], 'opening/stats/closing must retain the original without making a duplicate');
+
+    await h.app.handleAction('resume', original.id);
+    const resumed = h.players[1];
+    resumed.state.state.lineNum++;
+    resumed.state.preview = 'A new choice awaits.';
+    resumed.values['persist:small-story:state'] = 'new engine page cache';
+    await h.app.flush();
+    const records = await h.vault.getAll('saves');
+    assert.equal(records.length, 2, 'a new story position must create a checkpoint');
+    const automatic = records.find(record => record.id !== original.id);
+    assert.equal(automatic.snapshot.preview, 'A new choice awaits.');
+    assert.equal(automatic.storage['persist:small-story:state'], 'new engine page cache', 'engine caches are retained in real saves');
+    await h.app.refresh();
+    assert.match(h.document.querySelector('#detail').textContent, /A new choice awaits/);
+    assert.match(h.document.querySelector('#detail').textContent, /line 7/);
+    assert.equal(h.document.querySelector('.kind-auto .badge').textContent, 'Automatic');
+  } finally { await h.close(); }
+});
+
+test('repeated capture and stats caches do not inflate history, while in-game save slots still persist', async () => {
+  const h = await harness();
+  try {
+    await h.app.launch(game, version());
+    await h.app.flush();
+    const player = h.players[0];
+    player.values['persist:small-story:statetemp'] = 'stats view';
+    player.values['persist:small-story:state'] = 'same page in engine format';
+    await h.app.flush();
+    await h.app.flush();
+    assert.equal((await h.vault.getAll('saves')).length, 1);
+    player.values['persist:small-story:state_SAVE_1'] = 'a player-created quicksave';
+    await h.app.flush();
+    const records = await h.vault.getAll('saves');
+    assert.equal(records.length, 2);
+    assert.ok(records.some(record => record.storage['persist:small-story:state_SAVE_1'] === 'a player-created quicksave'));
+  } finally { await h.close(); }
+});
+
+test('explicit named saves can keep identical moments without creating an extra autosave', async () => {
+  const original = save(), h = await harness({ saved: [original] });
+  try {
+    await h.app.handleAction('resume', original.id);
+    await h.app.enqueueSave(snapshot(), 'manual', 'First named copy');
+    await h.app.enqueueSave(snapshot(), 'manual', 'Second named copy');
+    await h.app.leavePlayer();
+    const records = await h.vault.getAll('saves');
+    assert.equal(records.length, 3);
+    assert.ok(records.every(record => record.kind === 'manual'));
+  } finally { await h.close(); }
+});
+
+test('plain continuation pages do not autosave on capture or close, but decisions and variable changes do', async () => {
+  const original={...save(),kind:'auto'}, h=await harness({saved:[original]});
+  try {
+    await h.app.handleAction('resume',original.id);
+    const player=h.players[0];
+    player.state.transition='continue';
+    player.state.state.lineNum=10;player.state.state.indent=2;
+    await h.app.flush();
+    player.state.state.lineNum=20;
+    await h.app.flush();
+    assert.equal((await h.vault.getAll('saves')).length,1);
+    await h.app.leavePlayer();
+    assert.equal((await h.vault.getAll('saves')).length,1,'closing must not turn a skipped Next page into an autosave');
+
+    await h.app.handleAction('resume',original.id);
+    const choice=h.players[1];
+    choice.state.transition='choice';choice.state.state.lineNum=10;
+    await h.app.flush();
+    assert.equal((await h.vault.getAll('saves')).length,2,'a decision is saved even when only its story position changes');
+    choice.state.transition='continue';choice.state.state.lineNum=20;
+    choice.state.state.stats.strength=7;
+    await h.app.flush();
+    assert.equal((await h.vault.getAll('saves')).length,3,'real variable changes remain saved');
+    choice.values['persist:small-story:state_SAVE_1']='a quicksave after Next';
+    await h.app.flush();
+    assert.equal((await h.vault.getAll('saves')).length,4,'in-game save slots remain saved');
+  } finally {await h.close();}
+});
+
+test('save selection supports select all, cancel and a confirmed scoped batch deletion', async () => {
+  const records=[save(),{...save(),id:'auto-save',kind:'auto'},{...save(),id:'edited-save',kind:'edited',name:'Edited copy'}];
+  const h=await harness({saved:records});
+  try {
+    h.document.querySelector('#select-saves').click();
+    const boxes=[...h.document.querySelectorAll('[data-save-select]')];
+    boxes[0].checked=true;boxes[0].onchange();
+    boxes[1].checked=true;boxes[1].onchange();
+    assert.equal(h.document.querySelector('#save-selection-count').textContent,'2 selected');
+    assert.equal(h.document.querySelector('#select-all-saves').indeterminate,true);
+    h.document.querySelector('#delete-selected-saves').click();
+    assert.equal(h.document.querySelector('.delete-save-list').children.length,2);
+    h.document.querySelector('[data-close]').click();
+    assert.equal((await h.vault.getAll('saves')).length,3,'Cancel must not delete');
+    const selectedIds=boxes.slice(0,2).map(box=>box.dataset.saveSelect);
+    h.document.querySelector('#delete-selected-saves').click();
+    const deleteSaves=h.vault.deleteSaves;
+    h.vault.deleteSaves=async()=>{throw new Error('Storage unavailable');};
+    await h.document.querySelector('#delete-confirm').onclick();
+    assert.equal(h.document.querySelector('#delete-error').textContent,'Storage unavailable');
+    assert.equal(h.document.querySelector('#save-selection-count').textContent,'2 selected');
+    assert.equal((await h.vault.getAll('saves')).length,3);
+    assert.equal(h.document.querySelector('#delete-confirm').disabled,false);
+    h.vault.deleteSaves=deleteSaves;
+    await h.document.querySelector('#delete-confirm').onclick();
+    const remaining=await h.vault.getAll('saves');
+    assert.equal(remaining.length,1);
+    assert.ok(!selectedIds.includes(remaining[0].id));
+    assert.equal((await h.vault.getAll('versions')).length,1);
+    assert.equal(h.document.querySelector('#save-selection-count'),null,'selection ends after deleting');
+
+    h.document.querySelector('#select-saves').click();
+    const all=h.document.querySelector('#select-all-saves');
+    all.checked=true;all.dispatchEvent(new h.document.defaultView.Event('change'));
+    assert.equal(h.document.querySelector('#save-selection-count').textContent,'1 selected');
+    all.checked=false;all.dispatchEvent(new h.document.defaultView.Event('change'));
+    assert.equal(h.document.querySelector('#delete-selected-saves').disabled,true);
+    h.document.querySelector('#cancel-save-selection').click();
+    assert.equal(h.document.querySelectorAll('[data-save-select]').length,0);
+  } finally {await h.close();}
+});
+
+test('switching games clears save selection', async () => {
+  const h=await harness({saved:[save()]});
+  try {
+    await h.vault.importVersion({...game,id:'other-game',title:'Other story',activeVersionId:'other-version'},version('other-version',{gameId:'other-game'}));
+    await h.vault.putSave({...save(),id:'other-save',gameId:'other-game',versionId:'other-version'});
+    await h.app.refresh();
+    h.document.querySelector('#select-saves').click();
+    const box=h.document.querySelector('[data-save-select]');box.checked=true;box.onchange();
+    h.document.querySelector('[data-game="other-game"]').click();
+    assert.equal(h.document.querySelectorAll('[data-save-select]').length,0);
+    h.document.querySelector('#select-saves').click();
+    assert.equal(h.document.querySelector('#save-selection-count').textContent,'0 selected');
+    assert.equal(h.document.querySelector('[data-save-select]').dataset.saveSelect,'other-save');
+  } finally {await h.close();}
 });
 
 test('app serializes overlapping player launches while the archive runtime prepares', async () => {
