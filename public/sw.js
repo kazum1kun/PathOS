@@ -13,10 +13,13 @@ self.addEventListener('activate',event=>event.waitUntil((async()=>{
 self.addEventListener('fetch',event=>{
   if(event.request.method!=='GET'||new URL(event.request.url).origin!==self.location.origin)return;
   event.respondWith((async()=>{
-    const cached=await caches.match(event.request);
+    // A waiting update may already have its own cache. Keep this shell's HTML,
+    // scripts and styles together until that worker activates on the next launch.
+    const cache=await caches.open(CACHE);
+    const cached=await cache.match(event.request)||(event.request.mode==='navigate'?await cache.match('./index.html'):null);
     if(cached)return cached;
     try{return await fetch(event.request);}catch(error){
-      if(event.request.mode==='navigate')return await caches.match('./index.html');
+      if(event.request.mode==='navigate')return await cache.match('./index.html');
       throw error;
     }
   })());

@@ -21,11 +21,26 @@ let selectingSaves = false, selectionGame = null;
 let debugChoices = false;
 const selectedSaves = new Set();
 
+const disclosures = [['main-menu-toggle','main-menu'],['reader-menu-toggle','reader-actions']];
+function closeMenus(focus=false) {
+  for(const [triggerId,panelId] of disclosures){
+    const trigger=$('#'+triggerId);
+    if(trigger.getAttribute('aria-expanded')==='true'){
+      trigger.setAttribute('aria-expanded','false');$('#'+panelId).classList.remove('is-open');
+      if(focus)trigger.focus();
+    }
+  }
+}
+function toggleMenu(triggerId,panelId) {
+  const trigger=$('#'+triggerId), open=trigger.getAttribute('aria-expanded')!=='true';
+  closeMenus();trigger.setAttribute('aria-expanded',String(open));$('#'+panelId).classList.toggle('is-open',open);
+}
 function notify(message,error=false) {
   $('#notice').textContent=message; $('#notice').className=error?'error':''; $('#notice').hidden=false;
 }
 function report(error) { console.error(error); const message=error?.message || String(error);notify(message,true);if(session){$('#runtime-status').textContent=message;$('#runtime-status').hidden=false;$('#save-status').textContent='Save needs attention';} }
 function modal(html,init) {
+  closeMenus(true);
   $('#modal-body').innerHTML=html; $('#modal').showModal(); init?.($('#modal-body'));
   $('#modal-body').querySelectorAll('[data-close]').forEach(el=>el.onclick=()=>$('#modal').close());
 }
@@ -39,6 +54,9 @@ async function refresh() {
 }
 function render() {
   $('#game-count').textContent=games.length;
+  const selectedGame=games.find(game=>game.id===selected);
+  $('#menu-import-save').disabled=!selectedGame;
+  $('#menu-game-context').textContent=selectedGame?`Into ${selectedGame.title}`:'Import a game first';
   const term=$('#search').value.toLowerCase();
   $('#games').innerHTML=games.filter(g=>g.title.toLowerCase().includes(term)).map(g=>`<button class="game-card ${g.id===selected?'active':''}" data-game="${esc(g.id)}"><span class="spine" style="--spine:${spine(g.id)}" aria-hidden="true">${esc(g.title.charAt(0).toUpperCase())}</span><span><strong>${esc(g.title)}</strong><small>${plural(versions.filter(v=>v.gameId===g.id).length,'version')} · ${plural(saves.filter(s=>s.gameId===g.id).length,'save')}</small></span></button>`).join('');
   $('#games').querySelectorAll('[data-game]').forEach(el=>el.onclick=()=>{selected=el.dataset.game;render();});
@@ -70,7 +88,7 @@ function render() {
   $('#detail').querySelectorAll('[data-action]').forEach(el=>el.onclick=()=>handleAction(el.dataset.action,el.dataset.id).catch(report));
 }
 function savesToolbar(gameSaves) {
-  if(!selectingSaves)return `<div class="toolbar"><p>Every version. Every saved path.</p><div class="toolbar-actions"><button id="select-saves" class="small-button" ${gameSaves.length?'':'disabled'}>Select saves</button><button id="import-save" class="small-button">Import save</button></div></div>`;
+  if(!selectingSaves)return `<div class="toolbar"><p>Every version. Every saved path.</p><div class="toolbar-actions"><button id="import-save" class="small-button">Import save</button><button id="select-saves" class="small-button" ${gameSaves.length?'':'disabled'}>Select saves</button></div></div>`;
   return '<div class="toolbar bulk-controls"><label class="select-all"><input id="select-all-saves" type="checkbox">Select all saves</label><span id="save-selection-count" role="status" aria-live="polite">0 selected</span><div class="toolbar-actions"><button id="delete-selected-saves" class="small-button danger" disabled>Delete selected</button><button id="cancel-save-selection" class="small-button">Done</button></div></div>';
 }
 function updateSaveSelection() {
@@ -159,6 +177,7 @@ async function importArchive(file,targetGameId) {
 async function launch(game,version,save) {
   if(launching)return;
   if(!version)throw new Error('No game version is installed.');
+  closeMenus();
   launching=true;$('#leave-player').disabled=true;
   try{
     if(runtime)await leavePlayer();
@@ -216,6 +235,7 @@ async function flush() {
 async function leavePlayer(capture=true) {
   if(capture)await flush();
   clearTimeout(autoTimer);runtime?.dispose();runtime=null;session=null;
+  closeMenus();
   $('#player').hidden=true;$('#runtime').replaceChildren();document.body.style.overflow='';await refresh();
 }
 async function toggleChoiceDebug() {
@@ -224,7 +244,7 @@ async function toggleChoiceDebug() {
   try{
     const result=await player.setDebugMode(!debugChoices);
     if(session!==current)return;
-    debugChoices=result.enabled;button.setAttribute('aria-pressed',String(debugChoices));
+    debugChoices=result.enabled;button.setAttribute('aria-pressed',String(debugChoices));closeMenus(true);
   }catch(error){if(session===current){$('#runtime-status').textContent=error.message;$('#runtime-status').hidden=false;}}
   finally{if(session===current)button.disabled=false;}
 }
@@ -305,7 +325,7 @@ async function showStorageInfo(){
   let estimate;try{estimate=await navigator.storage?.estimate?.();}catch{/* Status and installation help are still useful. */}
   modal(`<h2>Browser storage</h2>${estimate?`<p>Using ${bytes(estimate.usage||0)} of about ${bytes(estimate.quota||0)}.</p>`:''}<p>${persistent?'Persistent storage is on. Keep backups to protect against clearing site data or losing your device.':'Persistent storage has not been confirmed. Your browser may clear this library, so export backups to keep another copy.'}</p>${isIOSWeb()?iosHomeScreenHelp():''}<div class="modal-actions"><button data-close class="primary">Done</button></div>`);
 }
-function help(){modal(`<h2>Your games, kept together</h2><p>Import an APK that contains a complete ChoiceScript web game, or a ZIP of a playable ChoiceScript folder. Android code, in-app purchases, and chapters that download after installation won’t work here.</p><ol><li>Import a game and start playing. Automatic snapshots keep your recent positions; named snapshots stay until you delete them.</li><li>When a game gets an update, import the new APK and choose the same game under “Library.” This works even if the update’s detected game ID has changed.</li><li>All saves appear in one list. When you resume, PathOS checks the saved chapter against the version you picked. If the save can’t continue there, you can still play it on its original version.</li><li>Use Edit to make a modified copy. Export a single save or a full backup to move between browsers and the iOS app.</li></ol><p>${db.storageKind==='native'?'Your library is saved in the app’s durable device storage. It stays through app updates, but deleting the app deletes its local data.':'Your library is stored in this browser, for this site address only. Keep using the same address so it carries over to new releases.'} The browser and iOS app keep separate libraries and don’t sync. Backups include the imported game files, so keep them private.</p>${isIOSWeb()?iosHomeScreenHelp():''}<p>Export a backup to Files or iCloud Drive to protect against losing your device or deleting local data.</p><div class="modal-actions"><button id="help-restore" class="secondary">Restore backup</button><button data-close class="primary">Done</button></div>`,()=>{$('#help-restore').onclick=()=>{$('#modal').close();$('#backup-file').click();};});}
+function help(){modal(`<h2>Your games, kept together</h2><p>Import an APK that contains a complete ChoiceScript web game, or a ZIP of a playable ChoiceScript folder. Bundled APK content stays available through local purchase checks. Android code, store billing, and chapters that download after installation won’t work here.</p><ol><li>Import a game and start playing. Automatic snapshots keep your recent positions; named snapshots stay until you delete them.</li><li>When a game gets an update, import the new APK and choose the same game under “Library.” This works even if the update’s detected game ID has changed.</li><li>All saves appear in one list. When you resume, PathOS checks the saved chapter against the version you picked. If the save can’t continue there, you can still play it on its original version.</li><li>Use Edit to make a modified copy. Export a single save or a full backup to move between browsers and the iOS app.</li></ol><p>${db.storageKind==='native'?'Your library is saved in the app’s durable device storage. It stays through app updates, but deleting the app deletes its local data.':'Your library is stored in this browser, for this site address only. Keep using the same address so it carries over to new releases.'} The browser and iOS app keep separate libraries and don’t sync. Backups include the imported game files, so keep them private.</p>${isIOSWeb()?iosHomeScreenHelp():''}<p>Export a backup to Files or iCloud Drive to protect against losing your device or deleting local data.</p><div class="modal-actions"><button id="help-restore" class="secondary">Restore backup</button><button data-close class="primary">Done</button></div>`,()=>{$('#help-restore').onclick=()=>{$('#modal').close();$('#backup-file').click();};});}
 
 $('#import').onclick=()=>{delete $('#archive-file').dataset.target;$('#archive-file').click();};
 $('#archive-file').onchange=event=>{const file=event.target.files[0];if(file)importArchive(file,event.target.dataset.target).catch(report);event.target.value='';};
@@ -319,6 +339,17 @@ $('#backup-file').onchange=async event=>{const file=event.target.files[0];event.
 }catch(e){report(e);}};
 $('#search').oninput=render;$('#help').onclick=help;$('#save-now').onclick=manualSave;
 $('#debug-choices').onclick=toggleChoiceDebug;
+for(const [triggerId,panelId] of disclosures)$('#'+triggerId).onclick=()=>toggleMenu(triggerId,panelId);
+$('#main-menu').addEventListener('click',event=>{
+  const button=event.target.closest('button');if(!button||button.disabled)return;
+  closeMenus(true);
+  if(button.dataset.trigger){
+    if(button.id==='menu-import-save'){selectingSaves=false;selectedSaves.clear();render();}
+    $('#'+button.dataset.trigger).click();
+  }
+});
+document.addEventListener('click',event=>{if(!event.target.closest('.topbar,.player-toolbar'))closeMenus();});
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&disclosures.some(([id])=>$('#'+id).getAttribute('aria-expanded')==='true')){event.preventDefault();closeMenus(true);}});
 $('#leave-player').onclick=()=>leavePlayer().catch(error=>{modal(`<h2>No new snapshot was saved</h2><p>${esc(error.message)}</p><p>Wait for the game to finish loading and try again, or return to the library. Your existing snapshots are safe.</p><div class="modal-actions"><button data-close>Keep playing</button><button id="leave-without-save" class="primary">Return to library</button></div>`,()=>{$('#leave-without-save').onclick=()=>{$('#modal').close();leavePlayer(false).catch(report);};});});
 $('#storage-info').onclick=()=>showStorageInfo().catch(report);
 $('#demo').onclick=async()=>{try{const file=await createDemoArchive();await importArchive(file);}catch(e){report(e);}};

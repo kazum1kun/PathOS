@@ -362,7 +362,7 @@ export async function inspectArchive(input, { filename = input?.name || 'game.ap
     // mention them directly. Data-only JS changes conservatively require review.
     const bundledScripts = files.filter(file => /\.(?:js|mjs)$/i.test(file.path)).map(file => `${file.path}\u0000${engineSource(text(file.data))}`);
     const engineHash = await sha256([...scriptSources, ...bundledScripts].join('\n'));
-    candidates.push({ entryPath:entry.path.slice(rootPath.length), rootPath, title, storeName, ...manifest, versionName:manifest.versionName || (parsedVersion && parsedVersion !== 'UNKNOWN' ? parsedVersion : null), files, sceneIndex, ...initialDeclarationsFor(startup), contentHash, engineHash });
+    candidates.push({ entryPath:entry.path.slice(rootPath.length), rootPath, archiveFormat:entries.some(item => item.path === 'AndroidManifest.xml') ? 'apk' : 'zip', title, storeName, ...manifest, versionName:manifest.versionName || (parsedVersion && parsedVersion !== 'UNKNOWN' ? parsedVersion : null), files, sceneIndex, ...initialDeclarationsFor(startup), contentHash, engineHash });
   }
   if (!candidates.length) {
     const apk = entries.some(entry => entry.path === 'AndroidManifest.xml');

@@ -1,5 +1,35 @@
 # Verification for version 0.1.0
 
+## Local APK content (2026-10-21)
+
+The shared runtime now answers APK purchase checks from bundled content availability. Products with chapter mappings are available only when every mapped chapter is present; base-game and fake product markers are also supported. Checks remain asynchronous, notify engine purchase subscriptions, and report billing unavailable. APK chapters load from local assets instead of the authenticated web scene cache. Browser/native isolation and network restrictions remain in place; no store receipt is created or transferred, and missing content cannot be downloaded. ZIP exports keep their own billing behavior. This supersedes the trial-mode limitations recorded in the earlier compatibility and artwork checks below.
+
+Archive imports record APK/ZIP provenance. Earlier APK imports are recognized through their package metadata or original filename without re-importing. Resuming refreshes cached purchase-check flags on a copy of the selected state, leaving the saved record intact.
+
+Private checks imported the supplied Magikiras 1.0.9 and Choice of the Vampire 3.0.12 APKs. Their original `Scene.check_purchase` commands reported the bundled products available, including Vampire's adfree, Memphis and St. Louis products. Their original `loadSceneFast` implementations successfully loaded every mapped paid chapter from the virtual filesystem without invoking the online paid-scene cache. Regression tests also cover partial archives, unmapped products, compiled scenes, earlier APK metadata, ZIP behavior and stale trial flags on resume. Set `PATHOS_CONTENT_APKS` to a JSON array of private APK paths to run this optional check; the APKs and extracted story files are not tracked.
+
+In the browser, Vampire started directly at its content warning without the prior Buy/Restore/Play for Free screen, then showed its New Orleans artwork. A named snapshot reopened at the same illustrated page after reloading the app, with no console warnings or errors. All 123 tests passed with private APK/engine checks enabled. Syntax checks, the web build, native asset sync and native metadata/bridge verification passed on Windows. Swift compilation and an iOS device smoke test still require macOS/Xcode. No nightly build was triggered.
+
+## Bundled artwork
+
+Choice of the Vampire 3.0.12 reproduced a bundled-image failure: `stats_header.png` resolved to a parent-created blob URL, but the opaque game frame reported a complete image with zero natural width/height. Bundled image resources now use data URLs with their original MIME type and exact bytes, matching the existing treatment of scripts and stylesheets. The change covers static HTML, CSS image references, and dynamic source assignments from `*image`/`*text_image`, including hash query strings. Origin isolation and network restrictions remain in place.
+
+The supplied APK's stats header loaded at 600×110 after the change. Its New Orleans chapter illustration loaded at 1200×900, and the chapter title loaded at 600×167. Both chapter images also loaded after saving and resuming. The browser reported no runtime warnings or console errors during the fixed-image smoke test. External store badges are not bundled and remain blocked. No commercial artwork or APK assets are tracked in the repository.
+
+The APK's own startup screen offers the first two volumes for free. Android receipts and native billing/modifications are unavailable in PathOS's browser fallback; the game's trial and purchase checks are preserved. The image fix does not change purchase status or provide a billing/restore service.
+
+All 118 tests pass, including the optional private engine checks. New coverage verifies original PNG/SVG bytes, MIME types, CSS references, dynamic image properties, and blocked remote image requests. Syntax checks, web build, native asset sync, and metadata/bridge verification pass locally. This is a shared-runtime browser check; iOS device behavior and Swift compilation still require macOS/Xcode.
+
+## Mobile navigation and controls
+
+At widths up to 860px, the shared web/native layout uses a labeled Menu disclosure for library tools and a separate Tools disclosure in the reader. The library menu includes APK/ZIP import, save import with the selected game's name, backup export/restore, storage, and Help. Import save is also visible directly in the Saves tab. Search is available on phones, save-row actions use two columns, and phone controls have at least 44px tap targets. Coarse-pointer devices also retain large targets at wider widths. Safe-area padding and scrollable menus/dialogs keep short or notched screens usable.
+
+Menu tests verify existing file-input routing, selected-game context, importing while bulk selection is active, disabled save import without an installed game, outside-click/Escape dismissal, and reader save/debug access without extra autosaves. The service worker keeps navigation HTML and assets within the active build's cache, avoiding mixed old scripts/new markup while an update waits to activate.
+
+Browser checks with the demo covered 320, 375, 430, 600, 768, 860, 861, and 1280px widths. Save import, selection/deletion controls, row actions, and reader actions stayed inside the page width. The phone Import save button opened the file picker. The Menu disclosure exposed Restore backup and selected-game save import; reader Tools exposed status, snapshot creation, and debugging. Escape returned focus to the trigger. Bulk-delete review and cancellation retained the selected save. No browser data was deleted during these checks.
+
+All 116 tests pass, including both optional supplied-APK engine checks. Syntax checks, web build, native asset sync, and metadata/bridge verification pass on Windows. Responsive browser checks are not a real iOS device or Swift compilation test.
+
 ## Choice debugger (2026-10-17)
 
 The shared web/native reader has a Debug choices toggle, initially off. Choice inspection runs against an isolated copy of the scene variables and indentation bookkeeping. It reads option source, preserves original engine options where available, and reports inline and block conditions, elseif/else branch requirements, selectable conditions, reuse restrictions, and multi-group paths. Unknown conditions stay marked unknown. It does not run option bodies or modify eligibility variables. Turning debug off restores the original controls without replaying the page.

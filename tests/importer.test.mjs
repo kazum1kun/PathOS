@@ -21,6 +21,7 @@ test('imports APK assets, scene index and literal defaults without executing gam
   const game = result.candidates[0];
   assert.equal(game.rootPath, 'assets/');
   assert.equal(game.entryPath, 'index.html');
+  assert.equal(game.archiveFormat, 'apk');
   assert.equal(game.title, 'A Small Story');
   assert.equal(game.storeName, 'small_story');
   assert.equal(game.packageName, 'org.example.small');
@@ -74,6 +75,7 @@ test('external engine and textual scenes under mygame preserve parent engine pat
   }));
   const game = result.candidates[0];
   assert.equal(game.rootPath, 'project/');
+  assert.equal(game.archiveFormat, 'zip');
   assert.equal(game.entryPath, 'mygame/index.html');
   assert.equal(game.storeName, 'authors_story');
   assert.equal(game.title, 'Author & Friends');

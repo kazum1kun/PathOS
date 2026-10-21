@@ -3,7 +3,7 @@ import { inspectChoiceBlock } from './choice-debug.js';
 /**
  * Imported games execute in an opaque-origin iframe. Only game state and isolated
  * storage cross its message channel; host/native APIs are never exposed there.
- * No original ChoiceScript engine or purchase implementation is replaced.
+ * APK purchase checks use a local adapter for content included in the archive.
  */
 export const RUNTIME_CHANNEL = 'pathos-runtime-v1';
 export const GAME_CSP = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob: data:; style-src 'unsafe-inline' blob: data:; img-src blob: data:; font-src blob: data:; media-src blob: data:; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
@@ -93,13 +93,15 @@ export async function prepareRuntimeDocument(version, { token, storage = {}, sta
     }
     // The player has an opaque origin. Parent-owned blob scripts can fail to
     // load in WebKit, and cross-origin classic scripts can hide exceptions as
-    // "Script error." Host-owned stylesheets can also be blocked, preventing
-    // page animations from completing. Embed both without changing script
-    // ordering, global declarations or the engine's original source.
+    // "Script error." Host-owned stylesheets and images can also be blocked.
+    // Embed these resources without changing script ordering, image bytes,
+    // global declarations or the engine's original source.
     const embeddedMime = /(?:java|ecma)script/i.test(file.mime) || /\.m?js$/i.test(path) ? 'text/javascript'
-      : /css/i.test(file.mime) || /\.css$/i.test(path) ? 'text/css' : null;
+      : /css/i.test(file.mime) || /\.css$/i.test(path) ? 'text/css'
+      : /^image\/[\w.+-]+$/i.test(file.mime) ? file.mime
+      : ({png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',svg:'image/svg+xml',ico:'image/x-icon',avif:'image/avif'})[path.split('.').pop().toLowerCase()] || null;
     if (embeddedMime) {
-      const url = 'data:' + embeddedMime + ';charset=utf-8;base64,' + base64(typeof body === 'string' ? new TextEncoder().encode(body) : body);
+      const url = 'data:' + embeddedMime + (embeddedMime.startsWith('image/') ? '' : ';charset=utf-8') + ';base64,' + base64(typeof body === 'string' ? new TextEncoder().encode(body) : body);
       urls[path] = url; creating.delete(path);
       return url;
     }
@@ -114,7 +116,10 @@ export async function prepareRuntimeDocument(version, { token, storage = {}, sta
   };
   for (const path of Object.keys(files)) assetURL(path);
   const virtual = Object.fromEntries(Object.values(files).map(file => [file.path, { url: urls[file.path], mime: file.mime, data: base64(file.bytes) }]));
-  const config = { token: token || crypto.randomUUID(), storage, state, debugMode, entryPath, files: virtual, storeName: version.storeName || version.metadata?.storeName || null };
+  // Older imports predate archiveFormat. Retain their APK compatibility without
+  // requiring re-import; a recorded ZIP format takes precedence over filenames.
+  const apkContent = version.archiveFormat ? version.archiveFormat === 'apk' : !!version.packageName || /\.apk$/i.test(version.filename || '');
+  const config = { token: token || crypto.randomUUID(), storage, state, debugMode, apkContent, entryPath, files: virtual, storeName: version.storeName || version.metadata?.storeName || null };
   const bootstrap = `<meta http-equiv="Content-Security-Policy" content="${GAME_CSP}"><script>(${runtimeBootstrap.toString()})(${safeJSON(config)}, ${inspectChoiceBlock.toString()});<\/script>`;
   let html = rewriteGameHTML(new TextDecoder().decode(files[entryPath].bytes), resolve);
   // A malformed export can contain executable tokens before its explicit head.
@@ -228,6 +233,63 @@ export function runtimeBootstrap(config, inspectChoices) {
     return parts.join('/');
   }
   const bytesOf = file => Uint8Array.from(atob(file.data), char => char.charCodeAt(0));
+  function bundledScene(name) {
+    name = String(name).replace(/ /g, '_');
+    return Array.isArray(window.allScenes?.[name]?.lines)
+      || !!config.files[pathOf('scenes/' + name + '.txt.json')]
+      || !!config.files[pathOf('scenes/' + name + '.txt')];
+  }
+  function bundledProduct(product) {
+    const scenes = Object.entries(window.purchases || {}).filter(([, id]) => id === product).map(([scene]) => scene);
+    // A product can include many chapters. A partial/demo archive must not be
+    // reported as complete just because its first paid chapter is present.
+    if (scenes.length) return scenes.every(scene => scene.startsWith('fake:') || bundledScene(scene));
+    // Older APKs have no chapter-to-product map. Their base-game unlock is
+    // adfree/appPurchase; do not grant unrelated or undeclared product IDs.
+    return (product === 'adfree' || product === window.appPurchase) && bundledScene('startup');
+  }
+  function hookAPKPurchases() {
+    if (!config.apkContent) return;
+    // The web engine otherwise tries its authenticated paid-scene cache before
+    // reading the same chapters already bundled in the APK's local assets.
+    if (typeof window.isStoreSceneCacheRequired === 'function' && !window.isStoreSceneCacheRequired.__pathosAPKContent) {
+      const localScenes = () => false;
+      Object.defineProperty(localScenes, '__pathosAPKContent', { value: true });
+      window.isStoreSceneCacheRequired = localScenes;
+    }
+    if (typeof window.checkPurchase !== 'function' || window.checkPurchase.__pathosAPKContent) return;
+    const check = function(products, callback) {
+      const result = Object.create(null);
+      for (const product of String(products).trim().split(/\s+/)) {
+        if (product && product !== 'billingSupported') result[product] = bundledProduct(product);
+      }
+      // This is local content availability, not a store receipt or billing API.
+      result.billingSupported = false;
+      setTimeout(() => {
+        for (const product of Object.keys(result)) {
+          if (result[product] && typeof window.purchaseSubscriptions?.[product] === 'function') window.purchaseSubscriptions[product].call();
+        }
+        callback('ok', result);
+      }, 0);
+    };
+    Object.defineProperty(check, '__pathosAPKContent', { value: true });
+    window.checkPurchase = check;
+  }
+  function restoreAPKPurchaseChecks(state) {
+    if (!config.apkContent || !state?.temps) return state;
+    const restored = clone(state), temps = restored.temps, products = [];
+    for (const key of Object.keys(temps)) {
+      if (!key.startsWith('choice_purchased_') || key === 'choice_purchased_everything') continue;
+      const product = key.slice('choice_purchased_'.length);
+      temps[key] = bundledProduct(product); products.push(product);
+    }
+    if (products.length) {
+      if (Object.hasOwn(temps, 'choice_purchased_everything')) temps.choice_purchased_everything = products.every(product => temps['choice_purchased_' + product]);
+      if (Object.hasOwn(temps, 'choice_purchase_supported')) temps.choice_purchase_supported = false;
+      if (Object.hasOwn(temps, 'choice_purchase_error')) temps.choice_purchase_error = false;
+    }
+    return restored;
+  }
   function resolve(input) {
     const path = pathOf(input);
     if (path && config.files[path]) return config.files[path].url;
@@ -418,6 +480,7 @@ export function runtimeBootstrap(config, inspectChoices) {
     }
   }
   function hookEngine() {
+    hookAPKPurchases();
     // Track the engine action, not the button caption: "Next" can also submit
     // a choice or character input. Custom page-break captions are continuations.
     for (const [name, callbackIndex] of [['printOptions', 2], ['printInput', 2], ['printButton', 3]]) {
@@ -449,7 +512,7 @@ export function runtimeBootstrap(config, inspectChoices) {
           initialStateUsed = true;
           if (!state?.stats?.sceneName && pendingInitial?.stats?.sceneName) state = clone(pendingInitial);
         }
-        return originalRestore.call(this, state, forcedScene, userRestored);
+        return originalRestore.call(this, restoreAPKPurchaseChecks(state), forcedScene, userRestored);
       };
       Object.defineProperty(restore, '__pathosHooked', { value: true });
       window.restoreGame = restore;

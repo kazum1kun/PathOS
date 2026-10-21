@@ -5,8 +5,9 @@ import { readFile } from 'node:fs/promises';
 import { parseHTML } from 'linkedom';
 import { normalizeAssetPath, rewriteGameHTML, prepareRuntimeDocument, runtimeBootstrap, createRuntime, GAME_CSP } from '../src/runtime.js';
 import { inspectChoiceBlock } from '../src/choice-debug.js';
+import { inspectArchive } from '../src/importer.js';
 
-function sandbox(config = {}, domDocument = null) {
+function sandbox(config = {}, domDocument = null, extensions = {}) {
   const messages = [], listeners = new Map(), timers = new Map(); let nextTimer = 0;
   class Element { setAttribute(name, value) { this[name] = value; } }
   const document = domDocument || { querySelectorAll: () => [], addEventListener(name, fn) { const list = listeners.get('doc:' + name) || []; list.push(fn); listeners.set('doc:' + name, list); } };
@@ -17,7 +18,8 @@ function sandbox(config = {}, domDocument = null) {
     setTimeout(fn, delay = 0) { timers.set(++nextTimer, { fn, delay }); return nextTimer; },
     clearTimeout(id) { timers.delete(id); }, setInterval() { return 0; }, clearInterval() {},
     MutationObserver: class { observe() {} },
-    addEventListener(name, fn) { const list = listeners.get(name) || []; list.push(fn); listeners.set(name, list); }
+    addEventListener(name, fn) { const list = listeners.get(name) || []; list.push(fn); listeners.set(name, list); },
+    ...extensions,
   };
   context.window = context;
   vm.createContext(context);
@@ -95,7 +97,7 @@ test('prepared game document boots isolation before any game code', async () => 
     assert.ok(result.html.includes("frame-src 'none'"));
     assert.ok(result.html.includes('\\u003c/script>'));
     assert.ok(result.html.includes('src="data:text/javascript;charset=utf-8;base64,'));
-    assert.ok(result.html.includes('<img src="blob:'));
+    assert.ok(result.html.includes('<img src="data:image/png;base64,'));
     assert.ok(!result.html.includes('src="engine.js"'));
     assert.ok(result.html.includes('__pathosFinishLoading();'));
     assert.ok(GAME_CSP.includes("form-action 'none'"));
@@ -115,6 +117,36 @@ test('bundled scripts embed their original UTF-8 bytes and preserve classic scri
     assert.ok(!result.html.includes(source));
     assert.ok(result.html.includes("connect-src 'none'"));
   } finally { result.dispose(); }
+});
+
+test('bundled images embed their original bytes and MIME type for HTML and CSS in the opaque frame',async()=>{
+  const png=Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=='),char=>char.charCodeAt(0));
+  const svg=new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><text>灯</text></svg>');
+  const prepared=await prepareRuntimeDocument({entryPath:'mygame/index.html',files:[
+    {path:'mygame/index.html',mime:'text/html',data:'<link rel="stylesheet" href="style.css"><img src="stats_header.png?hash=123"><img src="mark.svg">'},
+    {path:'mygame/style.css',mime:'text/css',data:'body{background-image:url("stats_header.png");}'},
+    {path:'mygame/stats_header.png',mime:'image/png',data:png},
+    {path:'mygame/mark.svg',data:svg},
+  ]});
+  try{
+    const images=[...prepared.html.matchAll(/<img src="([^"]+)"/g)].map(match=>match[1]);
+    assert.ok(images[0].startsWith('data:image/png;base64,'));assert.ok(images[1].startsWith('data:image/svg+xml;base64,'));
+    assert.deepEqual(new Uint8Array(await (await fetch(images[0])).arrayBuffer()),png);
+    assert.deepEqual(new Uint8Array(await (await fetch(images[1])).arrayBuffer()),svg);
+    const stylesheet=prepared.html.match(/<link rel="stylesheet" href="([^"]+)"/)[1];
+    assert.ok((await (await fetch(stylesheet)).text()).includes(`url("${images[0]}")`));
+    assert.ok(prepared.html.includes("img-src blob: data:"));assert.ok(prepared.html.includes("connect-src 'none'"));
+  }finally{prepared.dispose();}
+});
+
+test('dynamic image source properties resolve bundled hashed paths while remote images stay blocked',()=>{
+  class ImageElement {get src(){return this.assigned;}set src(value){this.assigned=value;}}
+  const url='data:image/png;base64,aW1hZ2U=';
+  const env=sandbox({entryPath:'mygame/index.html',files:{'mygame/stats_header.png':{url,mime:'image/png',data:'aW1hZ2U='}}},null,{HTMLImageElement:ImageElement});
+  env.run('window.picture=new HTMLImageElement();picture.src="stats_header.png?hash=123";');
+  assert.equal(env.context.picture.src,url);
+  env.run('picture.src=picture.src;');assert.equal(env.context.picture.src,url,'resolved image URLs remain unchanged');
+  env.run('picture.src="https://example.com/remote.png";');assert.equal(env.context.picture.src,'data:application/octet-stream,');
 });
 
 test('script errors identify the bundled asset and load failures are reported', () => {
@@ -138,7 +170,7 @@ test('stylesheets and their imports embed with rewritten local asset URLs', asyn
     const css = await (await fetch(url)).text();
     const theme = css.match(/@import "([^"]+)"/)[1];
     assert.equal(await (await fetch(theme)).text(), 'body::before { content: "\u706f\u53f0"; }');
-    assert.match(css, /url\("blob:/);
+    assert.match(css, /url\("data:image\/png;base64,/);
   } finally { result.dispose(); }
 });
 
@@ -196,6 +228,123 @@ test('APK platform flags select the bundled engine browser fallbacks without nat
   for (const name of ['isAndroidApp', 'isAmazonAndroidApp', 'isNookAndroidApp', 'isIosApp', 'isOmnibusApp']) assert.equal(env.context[name], false);
   assert.equal(env.context.androidBilling, undefined);
   assert.equal(env.context.webkit, undefined);
+});
+
+test('APK content compatibility covers old imports while explicit ZIP exports keep their purchase behavior', async () => {
+  const files = [{ path: 'index.html', data: '<p>Story</p>', mime: 'text/html' }];
+  for (const [metadata, expected] of [
+    [{ archiveFormat: 'apk' }, true], [{ filename: 'old-import.apk' }, true],
+    [{ packageName: 'org.example.game' }, true], [{ archiveFormat: 'zip', filename: 'renamed.apk', packageName: 'org.example.game' }, false],
+    [{ filename: 'author-export.zip' }, false],
+  ]) {
+    const prepared = await prepareRuntimeDocument({ entryPath: 'index.html', files, ...metadata });
+    try { assert.ok(prepared.html.includes(`"apkContent":${expected}`)); } finally { prepared.dispose(); }
+  }
+});
+
+test('APK purchase checks report complete bundled products asynchronously without billing or online scene caching', async () => {
+  const env = sandbox({ apkContent: true, entryPath: 'mygame/index.html', files: {
+    'mygame/scenes/chapter4.txt.json': { data: btoa('{"lines":["Paid chapter"]}'), mime: 'application/json' },
+    'mygame/scenes/chapter5.txt': { data: btoa('Another paid chapter'), mime: 'text/plain' },
+  } });
+  env.run(`
+    window.purchases={chapter4:'adfree',chapter5:'adfree',missing:'bonus','fake:tip':'tip'};
+    window.purchaseSubscriptions={adfree:function(){window.subscribed=(window.subscribed||0)+1;window.subscriptionContext=this===window;}};
+    function checkPurchase(){throw new Error('The web billing implementation must not run');}
+    function isStoreSceneCacheRequired(){return true;}
+    window.__pathosFinishLoading();
+    checkPurchase('adfree bonus tip unknown',function(ok,result){window.purchaseOK=ok;window.purchaseResult=result;});
+  `);
+  assert.equal(env.context.purchaseResult, undefined);
+  assert.equal(env.context.isStoreSceneCacheRequired(), false);
+  env.flush();
+  assert.equal(env.context.purchaseOK, 'ok');
+  assert.deepEqual(JSON.parse(JSON.stringify(env.context.purchaseResult)), { adfree: true, bonus: false, tip: true, unknown: false, billingSupported: false });
+  assert.equal(env.context.subscribed, 1);
+  assert.equal(env.context.subscriptionContext, true, 'purchase subscriptions retain the engine callback context');
+  assert.equal(env.context.knownPurchases, undefined, 'local content checks do not fabricate store receipts');
+  assert.equal(env.context.androidBilling, undefined);
+  assert.equal(env.context.isAndroidApp, false);
+  assert.equal(await (await env.context.fetch('scenes/chapter4.txt.json')).text(), '{"lines":["Paid chapter"]}');
+  env.run(`delete purchases.chapter5; purchases.missing='adfree'; checkPurchase('adfree',function(ok,result){window.incomplete=result.adfree;});`);
+  env.flush(); assert.equal(env.context.incomplete, false, 'all mapped paid chapters are required');
+});
+
+test('compiled APK scenes and older base-game product checks work without changing ZIP billing', () => {
+  for (const apkContent of [true, false]) {
+    const env = sandbox({ apkContent });
+    env.run(`
+      window.allScenes={startup:{lines:['Story']},chapter:{lines:['Paid story']}};
+      window.purchases={chapter:'bonus'};
+      function checkPurchase(products,callback){callback('ok',{adfree:false,bonus:false,billingSupported:true});}
+      function isStoreSceneCacheRequired(){return true;}
+      window.__pathosFinishLoading();
+      checkPurchase('adfree bonus',function(ok,result){window.purchaseResult=result;});
+    `);
+    env.flush();
+    assert.equal(env.context.purchaseResult.adfree, apkContent);
+    assert.equal(env.context.purchaseResult.bonus, apkContent);
+    assert.equal(env.context.purchaseResult.billingSupported, !apkContent);
+    assert.equal(env.context.isStoreSceneCacheRequired(), !apkContent);
+  }
+});
+
+test('resuming an APK refreshes cached trial flags on a copy of the selected save', () => {
+  const selected = { state: { stats: { sceneName: 'chapter', gold: 42 }, temps: {
+    choice_crc: 123, choice_purchased_adfree: false, choice_purchased_bonus: true,
+    choice_purchased_everything: false, choice_purchase_supported: true, choice_purchase_error: true,
+  }, lineNum: 0, indent: 0 } };
+  const env = sandbox({ apkContent: true, state: selected });
+  env.run(`window.allScenes={startup:{lines:['Story']}};window.purchases={missing:'bonus'};`);
+  env.run(miniEngine);
+  env.run('restoreGame(null, null, false);'); env.flush();
+  assert.equal(env.context.stats.scene.temps.choice_purchased_adfree, true);
+  assert.equal(env.context.stats.scene.temps.choice_purchased_bonus, false);
+  assert.equal(env.context.stats.scene.temps.choice_purchased_everything, false);
+  assert.equal(env.context.stats.scene.temps.choice_purchase_supported, false);
+  assert.equal(env.context.stats.scene.temps.choice_purchase_error, false);
+  assert.equal(selected.state.temps.choice_purchased_adfree, false);
+  assert.equal(selected.state.temps.choice_purchased_bonus, true);
+  assert.equal(env.context.stats.gold, 52, 'the normal restore path still runs');
+});
+
+test('private APKs keep their actual declared purchase checks on bundled content', { skip: !process.env.PATHOS_CONTENT_APKS }, async () => {
+  for (const filename of JSON.parse(process.env.PATHOS_CONTENT_APKS)) {
+    const [version] = (await inspectArchive(new Uint8Array(await readFile(filename)), { filename })).candidates;
+    const files = Object.fromEntries(version.files.map(file => [file.path, { data: Buffer.from(file.data).toString('base64'), mime: file.mime }]));
+    const scripts = version.files.filter(file => /\.js$/.test(file.path)).map(file => new TextDecoder().decode(file.data));
+    const purchases = JSON.parse(scripts.map(source => /\bpurchases\s*=\s*(\{[^}]*\})/.exec(source)?.[1]).find(Boolean));
+    const check = scripts.map(source => /Scene\.prototype\.check_purchase\s*=\s*function[^\n]*\{[\s\S]*?\n\};/.exec(source)?.[0]).find(Boolean);
+    const loader = scripts.map(source => /Scene\.prototype\.loadSceneFast\s*=\s*function[^\n]*\{[\s\S]*?\n\};/.exec(source)?.[0]).find(Boolean);
+    assert.ok(check, 'the original engine purchase command is present');
+    assert.ok(loader, 'the original paid chapter loader is present');
+    const env = sandbox({ apkContent: true, entryPath: version.entryPath, files });
+    env.context.purchases = purchases;
+    env.run(`function Scene(){this.nav={products:{}};this.temps={};this.execute=function(){window.resumed=true;};}
+      function checkPurchase(){throw new Error('Unexpected store access');}
+      function isStoreSceneCacheRequired(){return true;}
+      ${check}
+      window.__pathosFinishLoading();window.scene=new Scene();`);
+    const products = [...new Set(Object.values(purchases))];
+    for (const product of products) env.context.scene.nav.products[product] = {};
+    env.context.scene.check_purchase(products.join(' ')); env.flush();
+    for (const product of products) assert.equal(env.context.scene.temps['choice_purchased_' + product], true, `${version.title}: ${product}`);
+    assert.equal(env.context.scene.temps.choice_purchased_everything, true);
+    assert.equal(env.context.scene.temps.choice_purchase_supported, false);
+    assert.equal(env.context.resumed, true);
+    assert.equal(env.context.isStoreSceneCacheRequired(), false);
+    env.run(`${loader}
+      Scene.baseUrl='scenes';window.location={protocol:'http:'};window.isWeb=true;var isIE=false;
+      function startLoading(){}function doneLoading(){}
+      function findXhr(){return new XMLHttpRequest();}function jsonParse(text){return JSON.parse(text);}
+      function updateSinglePaidSceneCache(){throw new Error('Paid chapters must load from the APK, not the authenticated web cache');}
+      Scene.prototype.loadLinesFast=function(crc,lines,labels){this.crc=crc;this.lines=lines;this.labels=labels;};`);
+    for (const name of Object.keys(purchases).filter(name => !name.startsWith('fake:'))) {
+      env.run(`window.chapter=new Scene();chapter.name=${JSON.stringify(name)};chapter.loadSceneFast();`); env.flush();
+      assert.ok(env.context.chapter.lines?.length, `${version.title}: load paid chapter ${name}`);
+      assert.equal(env.context.chapter.crc, version.sceneIndex[name.toLowerCase()].crc);
+    }
+  }
 });
 
 test('player permits local submit handlers while preventing form navigation and origin access', async () => {

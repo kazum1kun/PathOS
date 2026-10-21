@@ -123,6 +123,57 @@ test('choice debug toggle controls the active runtime without adding saves and k
   }finally{await h.close();}
 });
 
+test('library menu opens existing import/restore controls, follows the selected game and closes on Escape or outside click', async()=>{
+  const h=await harness({saved:[save()]});
+  try{
+    const menu=h.document.querySelector('#main-menu-toggle'),panel=h.document.querySelector('#main-menu');
+    let pickedSave=0,restoredBackup=0;
+    h.document.querySelector('#save-file').click=()=>{pickedSave++;};
+    h.document.querySelector('#backup-file').click=()=>{restoredBackup++;};
+    h.document.querySelector('#select-saves').click();
+    assert.equal(h.document.querySelector('#import-save'),null);
+    menu.click();assert.equal(menu.getAttribute('aria-expanded'),'true');assert.ok(panel.classList.contains('is-open'));
+    assert.match(h.document.querySelector('#menu-game-context').textContent,/A Small Story/);
+    h.document.querySelector('#menu-import-save').click();
+    assert.equal(pickedSave,1);assert.equal(menu.getAttribute('aria-expanded'),'false');
+    assert.ok(h.document.querySelector('#import-save'),'menu import exits bulk selection and restores the regular save controls');
+    menu.click();h.document.querySelector('#restore-backup').click();
+    assert.equal(restoredBackup,1);assert.equal(menu.getAttribute('aria-expanded'),'false');
+    menu.click();
+    const escape=new h.document.defaultView.Event('keydown',{bubbles:true,cancelable:true});escape.key='Escape';h.document.dispatchEvent(escape);
+    assert.equal(escape.defaultPrevented,true);assert.equal(menu.getAttribute('aria-expanded'),'false');
+    menu.click();h.document.querySelector('h1').click();assert.equal(menu.getAttribute('aria-expanded'),'false');
+    const otherGame={...game,id:'other-game',title:'Another Story',activeVersionId:'other-version'};
+    await h.vault.importVersion(otherGame,version('other-version',{gameId:otherGame.id}));await h.app.refresh();
+    h.document.querySelector('[data-game="other-game"]').click();
+    assert.equal(h.document.querySelector('#menu-game-context').textContent,'Into Another Story');
+    menu.click();await clickAndWait(h.document.querySelector('#help'),()=>h.document.querySelector('#modal').open);
+    assert.equal(menu.getAttribute('aria-expanded'),'false');
+  }finally{await h.close();}
+  const empty=await harness({installed:[]});
+  try{assert.equal(empty.document.querySelector('#menu-import-save').disabled,true);assert.match(empty.document.querySelector('#menu-game-context').textContent,/Import a game first/);}
+  finally{await empty.close();}
+});
+
+test('reader tools disclose save status and existing actions without creating snapshots', async()=>{
+  const original=save(),h=await harness({saved:[original]});
+  try{
+    const mainMenu=h.document.querySelector('#main-menu-toggle'),tools=h.document.querySelector('#reader-menu-toggle');
+    mainMenu.click();await h.app.handleAction('resume',original.id);
+    assert.equal(mainMenu.getAttribute('aria-expanded'),'false');
+    tools.click();assert.equal(tools.getAttribute('aria-expanded'),'true');
+    assert.ok(h.document.querySelector('#reader-actions').classList.contains('is-open'));
+    await h.app.flush();assert.equal((await h.vault.getAll('saves')).length,1);
+    h.document.querySelector('#save-now').click();
+    assert.equal(tools.getAttribute('aria-expanded'),'false');assert.equal(h.document.querySelector('#modal').open,true);
+    h.document.querySelector('[data-close]').click();
+    tools.click();await clickAndWait(h.document.querySelector('#debug-choices'),()=>tools.getAttribute('aria-expanded')==='false');
+    assert.equal(h.players[0].debugMode,true);
+    await h.app.leavePlayer();assert.equal(tools.getAttribute('aria-expanded'),'false');
+    assert.equal((await h.vault.getAll('saves')).length,1);
+  }finally{await h.close();}
+});
+
 test('resuming an autosave does not save again for key ordering, engine caches or restore metadata', async () => {
   const original = { ...save(), kind: 'auto' };
   const h = await harness({ saved: [original] });

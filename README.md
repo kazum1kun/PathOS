@@ -50,6 +50,8 @@ The toggle updates the current choice controls without replaying the page or cre
 
 ## Backups
 
+On phones and smaller tablets, **Menu** contains game/save import, backup export and restore, device storage, and Help. **Import save** also stays visible in the selected game's Saves tab. While playing, open **Tools** for save status, **Save snapshot**, and **Debug choices**. Save-row actions use larger tap targets in a two-column layout.
+
 Export a full JSON backup of your library to move games and saves between a browser and the iOS app. PathOS keeps the 20 most recent automatic saves for each installed version, and keeps manual and edited saves separately. Editing a save always creates a copy. You can also import raw ChoiceScript saves and save bundles from the DinoKnights editor by choosing the installed version they came from. The browser and the iOS app have separate storage, and this release has no cloud sync.
 
 Autosaves record choices, character input, and changes to game state or in-game save slots. Plain “Next” continuations that only move through text do not add snapshots. Opening an existing save, viewing stats, or repeated engine cache writes also do not add duplicates. New snapshots include a short story preview; save rows show the scene, line position, and timestamp to the second.
@@ -81,4 +83,6 @@ The web build has no install-time dependencies. The ZIP reader is vendored in `s
 
 To try the app without a game of your own, choose **Explore with a demo** for a short original story. Not every APK will work: the package must contain a complete ChoiceScript web game, and the player can't run Android bytecode or native plugins.
 
-APKs that force Android-app mode use their bundled engine's browser/offline fallbacks in PathOS. Android billing and purchase restoration are unavailable, so games can retain their normal free-content limits even when additional chapters are bundled in the archive.
+APKs that force Android-app mode use their bundled engine's browser/offline fallbacks in PathOS. PathOS answers purchase checks locally for content included in the APK, so its bundled chapters remain available without Android billing. When a product has a chapter list, every chapter in that list must be present. Paid chapters load from the archive rather than the engine's online purchase cache. This also applies to existing APK imports and resumed saves; ZIP web exports retain their original purchase behavior.
+
+Bundled artwork is embedded for the isolated player, including images created by story commands and referenced by stylesheets. External images that are not included in the APK remain unavailable offline. Local APK content availability does not transfer Android purchase receipts or execute native Android modifications. Billing and downloads of missing chapters remain unavailable inside PathOS.
