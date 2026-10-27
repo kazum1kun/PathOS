@@ -36,7 +36,7 @@ export function rewriteGameHTML(html, resolve) {
     return tag.replace(/\b(src|href|poster|background)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
       (all, attr, double, single, bare) => {
         const value = double ?? single ?? bare ?? '';
-        if (/^(?:href)$/i.test(attr) && (value.startsWith('#') || /^javascript:/i.test(value))) return all;
+        if (/^href$/i.test(attr) && (value.startsWith('#') || /^javascript:/i.test(value))) return all;
         const resolved = resolve(value);
         return `${attr}="${String(resolved).replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"`;
       }).replace(/\bstyle\s*=\s*"([^"]*)"/gi, (_all, css) => `style="${rewriteCSS(css, resolve).replace(/"/g, '&quot;')}"`);
@@ -58,7 +58,7 @@ export function rewriteGameHTML(html, resolve) {
 async function fileBytes(data) {
   if (data instanceof Uint8Array) return data;
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
-  if (typeof Blob !== 'undefined' && data instanceof Blob) return new Uint8Array(await data.arrayBuffer());
+  if (data instanceof Blob) return new Uint8Array(await data.arrayBuffer());
   if (typeof data === 'string') return new TextEncoder().encode(data);
   if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   throw new Error('An imported asset has an unsupported data format.');
@@ -77,7 +77,8 @@ export async function prepareRuntimeDocument(version, { token, storage = {}, sta
   for (const file of version.files) {
     const path = normalizeAssetPath(file.path);
     if (!path || /^(blob:|data:)/.test(path)) throw new Error('Invalid asset path.');
-    files[path] = { path, bytes: await fileBytes(file.data), mime: file.mime || 'application/octet-stream' };
+    const bytes = await fileBytes(file.data);
+    files[path] = { path, bytes, data: base64(bytes), mime: file.mime || 'application/octet-stream' };
   }
   const entryPath = normalizeAssetPath(version.entryPath);
   if (!files[entryPath]) throw new Error('The selected entry page is missing from this version.');
@@ -88,7 +89,8 @@ export async function prepareRuntimeDocument(version, { token, storage = {}, sta
     if (!file || creating.has(path)) return 'data:application/octet-stream,';
     creating.add(path);
     let body = file.bytes;
-    if (/css/i.test(file.mime) || /\.css$/i.test(path)) {
+    const css = /css/i.test(file.mime) || /\.css$/i.test(path);
+    if (css) {
       body = rewriteCSS(new TextDecoder().decode(file.bytes), input => resolve(input, path));
     }
     // The player has an opaque origin. Parent-owned blob scripts can fail to
@@ -97,11 +99,12 @@ export async function prepareRuntimeDocument(version, { token, storage = {}, sta
     // Embed these resources without changing script ordering, image bytes,
     // global declarations or the engine's original source.
     const embeddedMime = /(?:java|ecma)script/i.test(file.mime) || /\.m?js$/i.test(path) ? 'text/javascript'
-      : /css/i.test(file.mime) || /\.css$/i.test(path) ? 'text/css'
+      : css ? 'text/css'
       : /^image\/[\w.+-]+$/i.test(file.mime) ? file.mime
       : ({png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',svg:'image/svg+xml',ico:'image/x-icon',avif:'image/avif'})[path.split('.').pop().toLowerCase()] || null;
     if (embeddedMime) {
-      const url = 'data:' + embeddedMime + (embeddedMime.startsWith('image/') ? '' : ';charset=utf-8') + ';base64,' + base64(typeof body === 'string' ? new TextEncoder().encode(body) : body);
+      const data = typeof body === 'string' ? base64(new TextEncoder().encode(body)) : file.data;
+      const url = 'data:' + embeddedMime + (embeddedMime.startsWith('image/') ? '' : ';charset=utf-8') + ';base64,' + data;
       urls[path] = url; creating.delete(path);
       return url;
     }
@@ -115,12 +118,12 @@ export async function prepareRuntimeDocument(version, { token, storage = {}, sta
     return path && files[path] ? assetURL(path) : 'data:application/octet-stream,';
   };
   for (const path of Object.keys(files)) assetURL(path);
-  const virtual = Object.fromEntries(Object.values(files).map(file => [file.path, { url: urls[file.path], mime: file.mime, data: base64(file.bytes) }]));
+  const virtual = Object.fromEntries(Object.values(files).map(file => [file.path, { url: urls[file.path], mime: file.mime, data: file.data }]));
   // Older imports predate archiveFormat. Retain their APK compatibility without
   // requiring re-import; a recorded ZIP format takes precedence over filenames.
   const apkContent = version.archiveFormat ? version.archiveFormat === 'apk' : !!version.packageName || /\.apk$/i.test(version.filename || '');
   const config = { token: token || crypto.randomUUID(), storage, state, debugMode, appearanceCSS, apkContent, entryPath, files: virtual, storeName: version.storeName || version.metadata?.storeName || null };
-  const bootstrap = `<meta http-equiv="Content-Security-Policy" content="${GAME_CSP}"><script>(${runtimeBootstrap.toString()})(${safeJSON(config)}, ${inspectChoiceBlock.toString()});<\/script>`;
+  const bootstrap = `<meta http-equiv="Content-Security-Policy" content="${GAME_CSP}"><script>(${runtimeBootstrap.toString()})(${safeJSON(config)}, ${inspectChoiceBlock.toString()}, ${normalizeAssetPath.toString()});<\/script>`;
   let html = rewriteGameHTML(new TextDecoder().decode(files[entryPath].bytes), resolve);
   // A malformed export can contain executable tokens before its explicit head.
   // Start the document ourselves so CSP and storage always precede every game
@@ -136,7 +139,7 @@ export async function prepareRuntimeDocument(version, { token, storage = {}, sta
 }
 
 // Serialized into the opaque frame. Keep this function self-contained.
-export function runtimeBootstrap(config, inspectChoices) {
+export function runtimeBootstrap(config, inspectChoices, normalizePath) {
   'use strict';
   const channel = 'pathos-runtime-v1', token = config.token;
   const originalPost = parent.postMessage.bind(parent);
@@ -150,11 +153,13 @@ export function runtimeBootstrap(config, inspectChoices) {
   const warning = message => { if (!seenWarnings.has(message)) { seenWarnings.add(message); post('status', { level: 'error', message }); } };
   const status = (level, message) => post('status', { level, message });
   const clone = value => JSON.parse(JSON.stringify(value));
+  const pathsByURL = new Map();
+  for (const [path, file] of Object.entries(config.files)) if (!pathsByURL.has(file.url)) pathsByURL.set(file.url, path);
   let appearanceStyle = null, appearanceCSS = config.appearanceCSS || '';
   function applyAppearance(css = appearanceCSS) {
     if (typeof css !== 'string' || css.length > 50000) throw new Error('Reader appearance settings are invalid.');
     appearanceCSS = css;
-    if ((!css && !appearanceStyle) || !document.createElement) return;
+    if (!css && !appearanceStyle) return;
     const head = document.head || document.documentElement;
     if (!head) return;
     if (!appearanceStyle) { appearanceStyle = document.createElement('style'); appearanceStyle.id = 'pathos-reader-settings'; }
@@ -233,16 +238,8 @@ export function runtimeBootstrap(config, inspectChoices) {
   window.prompt = message => { warning('This game requested a synchronous native prompt: ' + String(message)); return null; };
   window.open = () => { warning('External links and native app commands are unavailable in the isolated player.'); return null; };
   function pathOf(input) {
-    let value = typeof input === 'string' ? input : input?.url || String(input);
-    const exact = Object.keys(config.files).find(key => config.files[key].url === value);
-    if (exact) return exact;
-    if (/^(?:https?:|\/\/|javascript:|mailto:|tel:|intent:|capacitor:)/i.test(value)) return null;
-    if (/^(?:blob:|data:|#)/i.test(value)) return value;
-    value = value.replace(/\\/g, '/').replace(/^file:\/\/\/(?:android_asset\/)?/i, '/').split(/[?#]/)[0];
-    try { value = decodeURIComponent(value); } catch {}
-    const parts = value.startsWith('/') ? [] : config.entryPath.split('/').slice(0, -1);
-    for (const part of value.split('/')) { if (!part || part === '.') continue; if (part === '..') { if (!parts.length) return null; parts.pop(); } else parts.push(part); }
-    return parts.join('/');
+    const value = typeof input === 'string' ? input : input?.url || String(input);
+    return pathsByURL.get(value) || normalizePath(value, config.entryPath);
   }
   const bytesOf = file => Uint8Array.from(atob(file.data), char => char.charCodeAt(0));
   function bundledScene(name) {
@@ -351,9 +348,8 @@ export function runtimeBootstrap(config, inspectChoices) {
     const descriptor = Object.getOwnPropertyDescriptor(type.prototype, property);
     if (descriptor?.set && descriptor.configurable) Object.defineProperty(type.prototype, property, { ...descriptor, set(value) { descriptor.set.call(this, resolve(String(value))); } });
   }
-  const repairAssets = root => {
-    if (!root?.querySelectorAll) return;
-    for (const element of root.querySelectorAll('[src],[poster],link[href]')) {
+  const repairAssets = () => {
+    for (const element of document.querySelectorAll('[src],[poster],link[href]')) {
       for (const attr of ['src', 'poster', ...(element.tagName === 'LINK' ? ['href'] : [])]) {
         if (!element.hasAttribute(attr)) continue;
         const raw = element.getAttribute(attr), mapped = resolve(raw);
@@ -522,7 +518,6 @@ export function runtimeBootstrap(config, inspectChoices) {
     menu.panel = panel; menu.root.appendChild(panel);
   }
   function hookChoiceDebug(prototype) {
-    if (typeof inspectChoices !== 'function') return;
     for (const name of ['choice', 'renderOptions', 'parseOptions']) {
       const original = prototype[name];
       if (typeof original !== 'function' || original.__pathosChoiceDebug) continue;
@@ -544,7 +539,7 @@ export function runtimeBootstrap(config, inspectChoices) {
           return options(model.options);
         }
       } : function(groups, options, callback, ...rest) {
-        const context = choiceContext, root = window.main || document.querySelector?.('#main') || document.querySelector?.('#story');
+        const context = choiceContext, root = window.main || document.querySelector('#main') || document.querySelector('#story');
         const before = root ? new Set(root.querySelectorAll('form')) : null;
         const result = original.call(this, groups, options, callback, ...rest);
         if (context?.scene === this && root && !this.secondaryMode && !this.saveSlot) {
@@ -626,19 +621,19 @@ export function runtimeBootstrap(config, inspectChoices) {
       }
       const result = original.apply(this, args);
       if (main) {
-        const root = document.querySelector?.('#container1 #main') || document.querySelector?.('#main') || document.querySelector?.('#story') || document.querySelector?.('main');
+        const root = document.querySelector('#container1 #main') || document.querySelector('#main') || document.querySelector('#story') || document.querySelector('main');
         if (candidate && root) candidate.preview = String(root.innerText || root.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 180);
         publish();
       }
       return result;
     };
   }
-  Object.defineProperty(window, '__pathosFinishLoading', { value() { hookEngine(); repairAssets(document); applyAppearance(); } });
+  Object.defineProperty(window, '__pathosFinishLoading', { value() { hookEngine(); repairAssets(); applyAppearance(); } });
   const hookTimer = setInterval(hookEngine, 20);
   setTimeout(() => { clearInterval(hookTimer); if (!ready) warning('This game never reached a ChoiceScript page that PathOS can save. It may need missing files or native Android features.'); }, 30000);
-  document.addEventListener('DOMContentLoaded', () => { hookEngine(); repairAssets(document); applyAppearance(); });
+  document.addEventListener('DOMContentLoaded', () => { hookEngine(); repairAssets(); applyAppearance(); });
   if (document.head) new MutationObserver(() => applyAppearance()).observe(document.head, { childList: true });
-  new MutationObserver(() => repairAssets(document)).observe(document, { subtree: true, childList: true });
+  new MutationObserver(repairAssets).observe(document, { subtree: true, childList: true });
   document.addEventListener('click', event => {
     const link = event.target.closest?.('a[href]');
     if (!link) return;
@@ -656,7 +651,7 @@ export function runtimeBootstrap(config, inspectChoices) {
   window.addEventListener('error', event => {
     const script = event.target?.tagName === 'SCRIPT' ? event.target : null;
     const url = script?.src || event.filename;
-    const path = Object.keys(config.files).find(key => config.files[key].url === url);
+    const path = pathsByURL.get(url);
     if (script) {
       warning('Could not load bundled game script' + (path ? ': ' + path : '.'));
     } else if (event.message || event.error?.message) {
@@ -670,24 +665,15 @@ export function runtimeBootstrap(config, inspectChoices) {
     if (event.source !== parent || !message || message.channel !== channel || message.token !== token) return;
     try {
       if (message.type === 'capture') {
-        post('storage', clone(values)); post('result', { snapshot: snapshot(), storage: clone(values) }, message.id);
+        post('result', { snapshot: snapshot(), storage: clone(values) }, message.id);
       } else if (message.type === 'appearance') {
         applyAppearance(message.payload?.css);
         post('result', { applied: true }, message.id);
       } else if (message.type === 'debug') {
-        if (typeof inspectChoices !== 'function' || typeof window.Scene?.prototype.choice !== 'function' || typeof window.Scene?.prototype.renderOptions !== 'function') throw new Error('Choice debugging is unavailable for this game engine.');
+        if (typeof window.Scene?.prototype.choice !== 'function' || typeof window.Scene?.prototype.renderOptions !== 'function') throw new Error('Choice debugging is unavailable for this game engine.');
         debugMode = !!message.payload?.enabled;
         if (choiceMenu) showChoiceDebug(choiceMenu);
         post('result', { enabled: debugMode }, message.id);
-      } else if (message.type === 'restore') {
-        const state = clone(message.payload?.state || message.payload);
-        if (!state?.stats?.sceneName || !state.temps || !Number.isInteger(state.lineNum)) throw new Error('Invalid ChoiceScript save.');
-        if (typeof window.restoreGame !== 'function' || typeof window.clearScreen !== 'function') throw new Error('This engine does not expose a supported restore method.');
-        const name = window.storeName || config.storeName || 'choicescript';
-        values['persist:' + name + ':state'] = JSON.stringify(state);
-        window.pseudoSave = {};
-        changed();
-        window.clearScreen(() => { window.restoreGame(state, null, false); post('result', { restored: true }, message.id); });
       }
     } catch (error) { post('result', { error: error.message }, message.id); }
   });
@@ -704,12 +690,12 @@ export async function createRuntime({ container, version, storage = {}, state = 
   // still prevent native form navigation, including submissions via form.submit().
   iframe.setAttribute('sandbox', 'allow-scripts allow-forms'); iframe.setAttribute('referrerpolicy', 'no-referrer');
   iframe.setAttribute('allow', "camera 'none'; microphone 'none'; geolocation 'none'; payment 'none'; usb 'none'; clipboard-read 'none'; clipboard-write 'none'");
-  const waiting = new Map(); let sequence = 0, disposed = false, latestStorage = { ...storage };
+  const waiting = new Map(); let sequence = 0, disposed = false;
   const listener = event => {
     const message = event.data;
     if (disposed || event.source !== iframe.contentWindow || !message || message.channel !== RUNTIME_CHANNEL || message.token !== prepared.token) return;
     if (message.type === 'snapshot') onSnapshot(message.payload);
-    else if (message.type === 'storage') { latestStorage = message.payload; onStorage(message.payload); }
+    else if (message.type === 'storage') onStorage(message.payload);
     else if (message.type === 'status') onStatus(message.payload);
     else if (message.type === 'result' && waiting.has(message.id)) {
       const task = waiting.get(message.id); waiting.delete(message.id); clearTimeout(task.timer);
@@ -729,11 +715,9 @@ export async function createRuntime({ container, version, storage = {}, state = 
   }
   return {
     iframe,
-    async capture() { const result = await request('capture'); latestStorage = result.storage; onStorage(result.storage); return result.snapshot; },
-    restore(value) { return request('restore', value); },
+    async capture() { const result = await request('capture'); onStorage(result.storage); return result.snapshot; },
     setDebugMode(enabled) { return request('debug', { enabled: !!enabled }); },
     setAppearance(css) { return request('appearance', { css }); },
-    getStorage() { return { ...latestStorage }; },
     dispose() { disposed = true; window.removeEventListener('message', listener); iframe.remove(); prepared.dispose();
       for (const task of waiting.values()) { clearTimeout(task.timer); task.reject(new Error('The player was closed.')); } waiting.clear(); }
   };

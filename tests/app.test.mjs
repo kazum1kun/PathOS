@@ -37,6 +37,7 @@ async function clickAndWait(element, completed) {
 // runtime is a controlled boundary: engine/VFS behavior has separate VM tests.
 async function harness({ installed = [version()], saved = [], runtimeFactory, archiveCandidate = version(), navigatorOverrides = {}, native = false, settings } = {}) {
   const { window, document } = parseHTML(await readFile(new URL('public/index.html', root), 'utf8'));
+  window.matchMedia = () => ({ matches: false, addEventListener() {} });
   const previous = new Map();
   for (const [key, value] of Object.entries({ window, document, navigator: { storage: { persist: async () => true }, ...navigatorOverrides }, location: { protocol: 'https:' } })) {
     previous.set(key, Object.getOwnPropertyDescriptor(globalThis, key));

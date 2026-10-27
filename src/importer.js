@@ -123,7 +123,7 @@ function addCompiledScenes(source, scenes) {
   let match;
   while ((match = assignments.exec(source))) {
     const parsed = jsonObjectAt(source, assignments.lastIndex);
-    if (!parsed || typeof parsed !== 'object') continue;
+    if (!parsed) continue;
     for (const [name, value] of Object.entries(parsed)) {
       if (!value || !Array.isArray(value.lines) || !value.lines.every(line => typeof line === 'string')) continue;
       const labels = dictionary();
@@ -232,12 +232,8 @@ function resolveRelative(from, relative) {
 async function hashFiles(files) {
   if (!globalThis.crypto?.subtle) fail('SECURE_CONTEXT_REQUIRED', 'Import requires HTTPS or localhost so the browser can calculate a version fingerprint.');
   // Hash each file first: the final allocation depends on file count, not game size.
-  const chunks = await Promise.all(files.map(async file => {
-    const hash = await crypto.subtle.digest('SHA-256', file.data);
-    return `${file.path}\u0000${[...new Uint8Array(hash)].map(byte => byte.toString(16).padStart(2, '0')).join('')}\n`;
-  }));
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(chunks.join('')));
-  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  const chunks = await Promise.all(files.map(async file => `${file.path}\u0000${await sha256(file.data)}\n`));
+  return sha256(chunks.join(''));
 }
 
 async function sha256(value) {
@@ -299,17 +295,18 @@ export async function inspectArchive(input, { filename = input?.name || 'game.ap
     bytes = new Uint8Array(await input.arrayBuffer());
   } else fail('INVALID_INPUT', 'Select an APK or ZIP file.');
   const entries = inspectDirectory(bytes, limits);
+  const entriesByPath = new Map(entries.map(entry => [entry.path, entry]));
+  const apk = entriesByPath.has('AndroidManifest.xml');
   let zip;
   try { zip = await globalThis.JSZip.loadAsync(bytes, { checkCRC32: false, createFolders: false }); }
   catch (error) { fail('CORRUPT_ZIP', `Unable to read this archive: ${error.message}`); }
   const cache = new Map();
   async function read(path) {
     if (!cache.has(path)) {
-      const entry = entries.find(item => item.path === path), file = zip.file(path);
+      const entry = entriesByPath.get(path), file = zip.file(path);
       if (!entry || !file) return null;
       let data;
       try { data = await expandBounded(file, entry); } catch (error) { if (error instanceof ArchiveError) throw error; fail('CORRUPT_ZIP', `Cannot decompress ${path}: ${error.message}`); }
-      if (data.length !== entry.size) fail('CORRUPT_ZIP', `Expanded length is inconsistent for ${path}.`);
       cache.set(path, data);
     }
     return cache.get(path);
@@ -329,9 +326,8 @@ export async function inspectArchive(input, { filename = input?.name || 'game.ap
     // APK assets root includes parent engine files for the common assets/mygame layout.
     const directory = entry.path.slice(0, entry.path.lastIndexOf('/') + 1);
     const rootPath = entry.path.startsWith('assets/') ? 'assets/' : /(?:^|\/)mygame\//i.test(directory) ? directory.replace(/mygame\/$/i, '') : directory;
-    const candidateEntries = entries.filter(item => !item.directory && item.path.startsWith(rootPath) && item.path !== 'AndroidManifest.xml' && !item.path.startsWith('META-INF/'));
     // Keep APK bytecode/resources out of ZIP-root web exports that also contain a manifest.
-    const webEntries = candidateEntries.filter(item => !/^(?:classes\d*\.dex|resources\.arsc|res\/|lib\/|META-INF\/)/.test(item.path.slice(rootPath.length)));
+    const webEntries = entries.filter(item => !item.directory && item.path.startsWith(rootPath) && item.path !== 'AndroidManifest.xml' && !/^(?:classes\d*\.dex|resources\.arsc|res\/|lib\/|META-INF\/)/.test(item.path.slice(rootPath.length)));
     for (const item of webEntries.filter(item => /(?:^|\/)scenes\/[^/]+\.(?:txt|txt\.json|json)$/i.test(item.path))) {
       const name = item.path.split('/').pop().replace(/(?:\.txt)?\.json$|\.txt$/i, '').toLowerCase();
       const source = text(await read(item.path));
@@ -362,10 +358,9 @@ export async function inspectArchive(input, { filename = input?.name || 'game.ap
     // mention them directly. Data-only JS changes conservatively require review.
     const bundledScripts = files.filter(file => /\.(?:js|mjs)$/i.test(file.path)).map(file => `${file.path}\u0000${engineSource(text(file.data))}`);
     const engineHash = await sha256([...scriptSources, ...bundledScripts].join('\n'));
-    candidates.push({ entryPath:entry.path.slice(rootPath.length), rootPath, archiveFormat:entries.some(item => item.path === 'AndroidManifest.xml') ? 'apk' : 'zip', title, storeName, ...manifest, versionName:manifest.versionName || (parsedVersion && parsedVersion !== 'UNKNOWN' ? parsedVersion : null), files, sceneIndex, ...initialDeclarationsFor(startup), contentHash, engineHash });
+    candidates.push({ entryPath:entry.path.slice(rootPath.length), rootPath, archiveFormat:apk ? 'apk' : 'zip', title, storeName, ...manifest, versionName:manifest.versionName || (parsedVersion && parsedVersion !== 'UNKNOWN' ? parsedVersion : null), files, sceneIndex, ...initialDeclarationsFor(startup), contentHash, engineHash });
   }
   if (!candidates.length) {
-    const apk = entries.some(entry => entry.path === 'AndroidManifest.xml');
     fail('NO_CHOICESCRIPT_GAME', apk ? 'This APK does not contain a supported ChoiceScript HTML game. Unity, native Android games, split APKs, and packages that download story files after installation are not supported.' : 'No ChoiceScript game was found. Choose an APK or a ZIP that contains the engine HTML, scripts, and story files.');
   }
   if (candidates.some(candidate => !candidate.storeName && !candidate.packageName)) warnings.push('This package has no stable store name or Android package ID. Link later imports to the existing game explicitly to preserve its saves.');

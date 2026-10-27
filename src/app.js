@@ -1,6 +1,6 @@
 import { inspectArchive } from './importer.js';
 import { openVault, decodeBackup, bytesToBase64 } from './storage.js';
-import { assessCompatibility, migrateSave, cloneEditedSave, validateSaveRecord, restartFromCheckpoint } from './compatibility.js';
+import { assessCompatibility, migrateSave, cloneEditedSave, restartFromCheckpoint } from './compatibility.js';
 import { createRuntime } from './runtime.js';
 import { createDemoArchive } from './demo.js';
 import { prepareLegacySaves } from './save-import.js';
@@ -22,7 +22,7 @@ let runtime = null, session = null, storage = {}, saveQueue = Promise.resolve(),
 let selectingSaves = false, selectionGame = null;
 let debugChoices = false;
 let settings = { ...DEFAULT_SETTINGS };
-const systemTheme = window.matchMedia?.('(prefers-color-scheme: dark)');
+const systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
 const selectedSaves = new Set();
 const emptyDetail = $('#detail').innerHTML;
 
@@ -50,14 +50,14 @@ function modal(html,init) {
   $('#modal-body').querySelectorAll('[data-close]').forEach(el=>el.onclick=()=>$('#modal').close());
 }
 function button(action,label,extra='') { return `<button data-action="${action}" ${extra}>${label}</button>`; }
-function currentReaderStyles(){return readerStyles(settings,systemTheme?.matches||false);}
+function currentReaderStyles(){return readerStyles(settings,systemTheme.matches);}
 async function applySettings(){
   document.documentElement.dataset.theme=settings.theme;
   document.documentElement.dataset.reduceMotion=String(settings.reduceMotion);
-  const dark=resolvedTheme(settings,systemTheme?.matches||false)==='dark';
+  const dark=resolvedTheme(settings,systemTheme.matches)==='dark';
   document.querySelectorAll('meta[name="theme-color"]').forEach(meta=>meta.content=dark?'#1a1814':'#f4efe4');
   if(!settings.autosaveLimit){clearTimeout(autoTimer);if(session)$('#save-status').textContent='Autosave off';}
-  await runtime?.setAppearance?.(currentReaderStyles());
+  await runtime?.setAppearance(currentReaderStyles());
 }
 function openSettings(){
   const options=entries=>entries.map(([value,label])=>`<option value="${value}">${label}</option>`).join('');
@@ -74,7 +74,7 @@ function openSettings(){
     const controls=Object.fromEntries(Object.keys(DEFAULT_SETTINGS).map(key=>[key,$('#settings-'+key)]));
     function read(){return Object.fromEntries(Object.entries(controls).map(([key,control])=>[key,control.type==='checkbox'?control.checked:['autosaveLimit','fontSize','lineHeight'].includes(key)?control.value.trim()===''?NaN:Number(control.value):control.value]));}
     function preview(){
-      const draft=normalizeSettings(read()),sample=$('#settings-preview'),dark=resolvedTheme(draft,systemTheme?.matches||false)==='dark';
+      const draft=normalizeSettings(read()),sample=$('#settings-preview'),dark=resolvedTheme(draft,systemTheme.matches)==='dark';
       for(const key of ['fontFamily','fontSize','lineHeight','readerWidth'])controls[key].disabled=draft.useGameAppearance;
       sample.hidden=draft.useGameAppearance;
       Object.assign(sample.style,{fontFamily:READER_FONTS[draft.fontFamily],fontSize:draft.fontSize+'px',lineHeight:String(draft.lineHeight),backgroundColor:dark?'#1a1814':'#fbf8f1',color:dark?'#ebe4d5':'#1e1b16'});
@@ -111,7 +111,7 @@ function render() {
   $('#games').innerHTML=games.filter(g=>g.title.toLowerCase().includes(term)).map(g=>`<button class="game-card ${g.id===selected?'active':''}" data-game="${esc(g.id)}"><span class="spine" style="--spine:${spine(g.id)}" aria-hidden="true">${esc(g.title.charAt(0).toUpperCase())}</span><span><strong>${esc(g.title)}</strong><small>${plural(versions.filter(v=>v.gameId===g.id&&!v.removed).length,'version')} · ${plural(saves.filter(s=>s.gameId===g.id).length,'save')}</small></span></button>`).join('');
   $('#games').querySelectorAll('[data-game]').forEach(el=>el.onclick=()=>{selected=el.dataset.game;render();});
   if(!selected){selectedSaves.clear();selectingSaves=false;selectionGame=null;tab='saves';$('#detail').innerHTML=emptyDetail;$('#demo').onclick=exploreDemo;return;}
-  const game=games.find(g=>g.id===selected), installed=versions.filter(v=>v.gameId===selected&&!v.removed).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  const game=selectedGame, installed=versions.filter(v=>v.gameId===selected&&!v.removed).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
   const active=installed.find(v=>v.id===game.activeVersionId) || installed[0];
   const gameSaves=saves.filter(s=>s.gameId===selected).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
   if(selectionGame!==selected || tab!=='saves'){selectedSaves.clear();selectingSaves=false;selectionGame=selected;}
@@ -146,9 +146,9 @@ function updateSaveSelection() {
   const boxes=[...$('#detail').querySelectorAll('[data-save-select]')];
   for(const box of boxes){box.checked=selectedSaves.has(box.dataset.saveSelect);box.closest('.save-row').classList.toggle('is-selected',box.checked);}
   const all=$('#select-all-saves');
-  if(all){all.checked=boxes.length>0&&selectedSaves.size===boxes.length;all.indeterminate=selectedSaves.size>0&&selectedSaves.size<boxes.length;}
-  if($('#save-selection-count'))$('#save-selection-count').textContent=`${selectedSaves.size} selected`;
-  if($('#delete-selected-saves'))$('#delete-selected-saves').disabled=selectedSaves.size===0;
+  all.checked=boxes.length>0&&selectedSaves.size===boxes.length;all.indeterminate=selectedSaves.size>0&&selectedSaves.size<boxes.length;
+  $('#save-selection-count').textContent=`${selectedSaves.size} selected`;
+  $('#delete-selected-saves').disabled=selectedSaves.size===0;
 }
 function saveTitle(save) {return save.kind==='auto'?`Autosave · ${save.snapshot.scene.name}`:save.name || 'Untitled save';}
 function confirmDeleteSaves(records) {
@@ -218,7 +218,6 @@ async function importArchive(file,targetGameId) {
   try{
     const result=await inspectArchive(file,{filename:file.name});
     const candidates=result.candidates;
-    if(!candidates.length)throw new Error('No supported ChoiceScript entry point was found.');
     const suggested=targetGameId||games.find(g=>g.identity&&candidates[0].storeName&&g.identity.toLowerCase()===candidates[0].storeName.toLowerCase())?.id||'';
     const identity=candidates[0].storeName || '';
     modal(`<h2>Add to your library</h2><p>The file stays on your device. Choose which game this version belongs to.</p><div class="form-row"><label for="entry">Entry page</label><select id="entry">${candidates.map((c,i)=>`<option value="${i}">${esc(c.title)} — ${esc(c.entryPath)}</option>`).join('')}</select></div><div class="form-row"><label for="destination">Library</label><select id="destination"><option value="">Add as a new game</option>${games.map(g=>`<option value="${esc(g.id)}" ${suggested===g.id?'selected':''}>Update ${esc(g.title)}</option>`).join('')}</select></div><div class="form-row"><label for="game-title">Title</label><input id="game-title" maxlength="200" value="${esc(candidates[0].title)}"></div><div class="form-row"><label for="version-label">Version label</label><input id="version-label" maxlength="100" value="${esc(candidates[0].versionName || file.name.replace(/\.(apk|zip)$/i,''))}"></div><p id="detected-id">Detected game ID: ${esc(identity||'none found. To import an update, choose the existing game under Library.')}</p>${result.warnings.map(w=>`<p>${esc(w)}</p>`).join('')}<div class="modal-error" id="import-error"></div><div class="modal-actions"><button data-close>Cancel</button><button id="confirm-import" class="primary">Import version</button></div>`,()=>{
@@ -236,7 +235,7 @@ async function importArchive(file,targetGameId) {
           await db.importVersion(game,version);
           selected=game.id;tab='saves';$('#modal').close();await refresh();
           notify(existing?'Update imported. All your earlier saves and versions are still here.':'Game imported. Start a new playthrough when you’re ready.');
-          if(db.storageKind==='browser')requestPersistence().catch(()=>{});
+          if(db.storageKind==='browser')requestPersistence();
         }catch(e){$('#import-error').textContent=e.message;$('#confirm-import').disabled=false;}
       };
     });
@@ -376,7 +375,7 @@ function openEditor(save) {
     function syncVars(){for(const el of $('#vars-panel').querySelectorAll('[data-variable]')){const value=el.dataset.type==='number'?Number(el.value):el.dataset.type==='boolean'?el.value==='true':el.value;if(typeof value==='number'&&(!Number.isFinite(value)||el.value.trim()===''))throw new Error('Enter a valid number for '+el.dataset.variable);edited.stats[el.dataset.variable]=value;}}
     $('#json-tab').onclick=()=>{try{syncVars();$('#state-json').value=JSON.stringify(edited,null,2);raw=true;$('#vars-panel').hidden=true;$('#json-panel').hidden=false;$('#json-tab').classList.add('active');$('#vars-tab').classList.remove('active');}catch(e){$('#edit-error').textContent=e.message;}};
     $('#vars-tab').onclick=()=>{if(raw){$('#edit-error').textContent='Raw state edits can’t be shown as variables. Save the copy, or close and reopen the editor to start over.';} };
-    $('#edit-confirm').onclick=async()=>{try{let record=cloneEditedSave(save,{},$('#edit-name').value.trim()||save.name+' (edited)');if(raw)record.snapshot.state=JSON.parse($('#state-json').value);else{syncVars();record.snapshot.state=edited;}validateSaveRecord(record);await db.putSave(record);$('#modal').close();await refresh();notify('Saved an edited copy. The original snapshot is still available.');}catch(e){$('#edit-error').textContent=e.message;}};
+    $('#edit-confirm').onclick=async()=>{try{const record=cloneEditedSave(save,{},$('#edit-name').value.trim()||save.name+' (edited)');if(raw)record.snapshot.state=JSON.parse($('#state-json').value);else{syncVars();record.snapshot.state=edited;}await db.putSave(record);$('#modal').close();await refresh();notify('Saved an edited copy. The original snapshot is still available.');}catch(e){$('#edit-error').textContent=e.message;}};
   });
 }
 
@@ -384,10 +383,9 @@ function safeName(value){return String(value||'pathos').replace(/[^a-z0-9_-]+/gi
 async function exportFile(name,value){
   const mime='application/zip';
   if(window.VaultNative?.exportFile){await window.VaultNative.exportFile({name,data:bytesToBase64(value),mime,encoding:'base64'});return;}
-  const blob=new Blob([value],{type:mime});
-  const file=new File([blob],name,{type:mime});
-  if(navigator.canShare?.({files:[file]})&&navigator.share){try{await navigator.share({files:[file],title:name});return;}catch(error){if(error.name==='AbortError')return;}}
-  const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
+  const file=new File([value],name,{type:mime});
+  if(navigator.canShare?.({files:[file]})){try{await navigator.share({files:[file],title:name});return;}catch(error){if(error.name==='AbortError')return;}}
+  const url=URL.createObjectURL(file),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
 }
 async function importSave(file){
   const envelope=await readSaveFile(file);
@@ -400,7 +398,7 @@ async function importSave(file){
   const contentHash=envelope.source?.contentHash, source=versions.find(v=>v.gameId===game.id&&!v.removed&&v.contentHash===contentHash);
   if(!source)throw new Error('The game version that created this save isn’t installed for the selected game. Install that version first so the save can be verified.');
   const record={...envelope.save,id:uid(),gameId:game.id,versionId:source.id,createdAt:new Date().toISOString(),name:(envelope.save.name||'Imported save')+' (imported)'};
-  validateSaveRecord(record);await db.putSave(record);await refresh();notify('Save imported into the selected game.');
+  await db.putSave(record);await refresh();notify('Save imported into the selected game.');
 }
 function previewLegacyImport(envelope,game){
   const installed=versions.filter(v=>v.gameId===game.id&&!v.removed);
@@ -417,8 +415,8 @@ function previewLegacyImport(envelope,game){
     preview();
   });
 }
-function isIOSWeb(){return !window.VaultNative&&(/iPad|iPhone|iPod/.test(navigator.userAgent||'')||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1));}
-function isHomeScreen(){return navigator.standalone===true||window.matchMedia?.('(display-mode: standalone)').matches===true;}
+function isIOSWeb(){return !window.VaultNative&&(/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1));}
+function isHomeScreen(){return navigator.standalone===true||window.matchMedia('(display-mode: standalone)').matches;}
 function iosHomeScreenHelp(){return `<h3>Keep PathOS on your Home Screen</h3><ol><li>Export a backup of your current library to Files or iCloud Drive.</li><li>Open this site in Safari. In the Share menu, choose Add to Home Screen, then tap Add. If offered, leave Open as Web App on.</li><li>Open PathOS from its Home Screen icon. If your library is empty, use Restore backup.</li><li>Tap Check device storage to request persistent storage again.</li></ol><p>Home Screen installation can help Safari grant persistent storage. Approval is decided by iOS, so keep backups even after installing.</p>`;}
 async function requestPersistence(){
   try{if(await navigator.storage?.persisted?.())return true;return await navigator.storage?.persist?.()===true;}
@@ -473,5 +471,5 @@ document.addEventListener('visibilitychange',()=>{if(document.visibilityState===
 document.addEventListener('vault-native-pause',()=>flush().catch(report).finally(()=>window.VaultNative?.storage?.({operation:'backgroundSaveFinished'}).catch(report)));
 window.addEventListener('pagehide',()=>{flush().catch(()=>{});});
 
-systemTheme?.addEventListener?.('change',()=>applySettings().catch(report));
+systemTheme.addEventListener('change',()=>applySettings().catch(report));
 try{db=await openVault();settings=await db.getSettings();await applySettings();await db.compactSaves();setupStorageHelp();await refresh();if('serviceWorker' in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').catch(error=>console.warn('Offline shell unavailable',error));}catch(error){report(error);$('#import').disabled=true;}

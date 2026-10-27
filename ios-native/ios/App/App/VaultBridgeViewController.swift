@@ -5,9 +5,7 @@ import WebKit
 
 /// The library UI owns the native bridge. Imported game frames never receive native privileges.
 final class VaultBridgeViewController: CAPBridgeViewController {
-    private var guardedCapacitorHandler: TrustedFrameHandler?
-    private var exportHandler: VaultExportHandler?
-    private var storageHandler: VaultStorageHandler?
+    // The web view's UI delegate is weak; its content controller retains script handlers.
     private var guardedUIDelegate: TrustedUIDelegate?
     private var backgroundSaveTask: UIBackgroundTaskIdentifier = .invalid
     private var exportInProgress = false
@@ -21,10 +19,8 @@ final class VaultBridgeViewController: CAPBridgeViewController {
 
         // Capacitor's native transport is normally present in every WKWebView frame.
         // Gate it too, so an imported APK cannot call Http or other native plugins directly.
-        let guarded = TrustedFrameHandler(target: capacitorBridge.webViewDelegationHandler)
-        guardedCapacitorHandler = guarded
         controller.removeScriptMessageHandler(forName: "bridge")
-        controller.add(guarded, name: "bridge")
+        controller.add(TrustedFrameHandler(target: capacitorBridge.webViewDelegationHandler), name: "bridge")
 
         // The default delegate also implements a synchronous prompt transport.
         // Keep every native UI path behind the same trusted-frame boundary.
@@ -32,12 +28,8 @@ final class VaultBridgeViewController: CAPBridgeViewController {
         guardedUIDelegate = uiDelegate
         webView.uiDelegate = uiDelegate
 
-        let exporter = VaultExportHandler(controller: self)
-        exportHandler = exporter
-        controller.add(exporter, name: "pathosExport")
-        let storage = VaultStorageHandler(controller: self)
-        storageHandler = storage
-        controller.add(storage, name: "pathosStorage")
+        controller.add(VaultExportHandler(controller: self), name: "pathosExport")
+        controller.add(VaultStorageHandler(controller: self), name: "pathosStorage")
         controller.addUserScript(WKUserScript(
             source: Self.exportScript,
             injectionTime: .atDocumentStart,
@@ -48,8 +40,6 @@ final class VaultBridgeViewController: CAPBridgeViewController {
         try? FileManager.default.removeItem(at: exportDirectory)
         NotificationCenter.default.addObserver(self, selector: #selector(didEnterBackground),
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(willEnterForeground),
-                                               name: UIApplication.willEnterForegroundNotification, object: nil)
     }
 
     deinit {
@@ -70,10 +60,6 @@ final class VaultBridgeViewController: CAPBridgeViewController {
             UIApplication.shared.endBackgroundTask(backgroundSaveTask)
             backgroundSaveTask = .invalid
         }
-    }
-
-    @objc private func willEnterForeground() {
-        webView?.evaluateJavaScript("document.dispatchEvent(new Event('vault-native-resume'))", completionHandler: nil)
     }
 
     fileprivate func exportFile(_ payload: [String: Any]) {
@@ -142,8 +128,8 @@ final class VaultBridgeViewController: CAPBridgeViewController {
     fileprivate func reply(_ id: String, result: Any = [String: Any](), error: String? = nil) {
         var response: [String: Any] = ["id": id, "ok": error == nil, "result": result]
         if let error = error { response["error"] = error }
-        guard let bytes = try? JSONSerialization.data(withJSONObject: response),
-              let json = String(data: bytes, encoding: .utf8) else { return }
+        guard let bytes = try? JSONSerialization.data(withJSONObject: response) else { return }
+        let json = String(decoding: bytes, as: UTF8.self)
         webView?.evaluateJavaScript("window.VaultNative?.__settle(\(json))", completionHandler: nil)
     }
 
@@ -193,11 +179,7 @@ final class VaultBridgeViewController: CAPBridgeViewController {
 
 /// WKScriptMessageHandler does not inherit a web iframe's sandbox restrictions.
 /// Check the frame and exact bundled origin before forwarding any native request.
-private func isTrustedLibraryFrame(_ message: WKScriptMessage) -> Bool {
-    return isTrustedLibraryFrameInfo(message.frameInfo)
-}
-
-private func isTrustedLibraryFrameInfo(_ frame: WKFrameInfo) -> Bool {
+private func isTrustedLibraryFrame(_ frame: WKFrameInfo) -> Bool {
     guard frame.isMainFrame,
           let url = frame.request.url,
           url.scheme == "capacitor", url.host == "localhost", url.port == nil else { return false }
@@ -212,7 +194,7 @@ private final class TrustedFrameHandler: NSObject, WKScriptMessageHandler {
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard isTrustedLibraryFrame(message) else { return }
+        guard isTrustedLibraryFrame(message.frameInfo) else { return }
         target?.userContentController(userContentController, didReceive: message)
     }
 }
@@ -225,7 +207,7 @@ private final class VaultExportHandler: NSObject, WKScriptMessageHandler {
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard isTrustedLibraryFrame(message),
+        guard isTrustedLibraryFrame(message.frameInfo),
               message.webView === controller?.webView,
               let payload = message.body as? [String: Any] else { return }
         controller?.exportFile(payload)
@@ -240,7 +222,7 @@ private final class VaultStorageHandler: NSObject, WKScriptMessageHandler {
     init(controller: VaultBridgeViewController) { self.controller = controller }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard isTrustedLibraryFrame(message), message.webView === controller?.webView,
+        guard isTrustedLibraryFrame(message.frameInfo), message.webView === controller?.webView,
               let payload = message.body as? [String: Any], let id = payload["id"] as? String,
               id.range(of: "^[A-Za-z0-9_-]{1,80}$", options: .regularExpression) != nil else { return }
         if payload["operation"] as? String == "backgroundSaveFinished" {
@@ -272,14 +254,14 @@ private final class TrustedUIDelegate: NSObject, WKUIDelegate {
 
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
                  initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
-        guard isTrustedLibraryFrameInfo(frame), let target = target else { completionHandler(); return }
+        guard isTrustedLibraryFrame(frame), let target = target else { completionHandler(); return }
         target.webView(webView, runJavaScriptAlertPanelWithMessage: message,
                        initiatedByFrame: frame, completionHandler: completionHandler)
     }
 
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
                  initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
-        guard isTrustedLibraryFrameInfo(frame), let target = target else { completionHandler(false); return }
+        guard isTrustedLibraryFrame(frame), let target = target else { completionHandler(false); return }
         target.webView(webView, runJavaScriptConfirmPanelWithMessage: message,
                        initiatedByFrame: frame, completionHandler: completionHandler)
     }
@@ -287,7 +269,7 @@ private final class TrustedUIDelegate: NSObject, WKUIDelegate {
     func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String,
                  defaultText: String?, initiatedByFrame frame: WKFrameInfo,
                  completionHandler: @escaping (String?) -> Void) {
-        guard isTrustedLibraryFrameInfo(frame), let target = target else { completionHandler(nil); return }
+        guard isTrustedLibraryFrame(frame), let target = target else { completionHandler(nil); return }
         target.webView(webView, runJavaScriptTextInputPanelWithPrompt: prompt, defaultText: defaultText,
                        initiatedByFrame: frame, completionHandler: completionHandler)
     }

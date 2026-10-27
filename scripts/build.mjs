@@ -1,8 +1,8 @@
-import { cp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { cp, rm, readdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 const root = fileURLToPath(new URL('../', import.meta.url));
-await mkdir(path.join(root, 'dist'), { recursive: true });
+await rm(path.join(root, 'dist'), { recursive: true, force: true });
 await cp(path.join(root, 'src'), path.join(root, 'dist/src'), { recursive: true });
 await cp(path.join(root, 'public'), path.join(root, 'dist'), { recursive: true });
 const assets=[];

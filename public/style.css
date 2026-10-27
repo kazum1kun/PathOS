@@ -138,7 +138,6 @@ h1{font-size:46px;line-height:1.05;font-weight:normal;letter-spacing:-.015em}
 .bulk-controls{position:sticky;top:8px;z-index:2;padding:12px;background:var(--sheet);border:1px solid var(--rule);gap:12px;flex-wrap:wrap}
 .select-all{display:flex;align-items:center;gap:8px;font-family:var(--sans);font-size:14px;cursor:pointer}
 .save-select{display:flex;flex:none;align-self:stretch;align-items:flex-start;padding:10px 13px;cursor:pointer}
-.bulk-controls .danger{color:var(--danger)}
 .save-row.is-selectable{align-items:flex-start}
 .save-select input,.select-all input{width:18px;height:18px;accent-color:var(--ribbon);cursor:pointer}
 .save-description{flex:1;min-width:0}
@@ -242,8 +241,8 @@ dialog .settings-hint{font-family:var(--sans);font-size:13px;line-height:1.5;col
   .row-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:100%;margin:8px 0 0}
   .row-actions button{min-width:0;padding:10px;border:1px solid var(--rule-2);font-size:14px}
   .row-actions>button:only-child{grid-column:1/-1}
-  .player-toolbar{grid-template-columns:auto minmax(0,1fr) auto;gap:8px;padding:8px max(8px,env(safe-area-inset-right)) 8px max(8px,env(safe-area-inset-left))}
-  .reader-actions{display:none;grid-column:1/-1;justify-self:stretch;width:100%;padding:12px 0 4px;border-top:1px solid var(--rule)}
+  .player-toolbar{padding:8px max(8px,env(safe-area-inset-right)) 8px max(8px,env(safe-area-inset-left))}
+  .reader-actions{width:100%;padding:12px 0 4px;border-top:1px solid var(--rule)}
   .reader-actions.is-open{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
   .reader-actions.is-open #save-status{display:block;grid-column:1/-1;text-align:center;overflow-wrap:anywhere}
   .now-playing strong{font-size:17px}

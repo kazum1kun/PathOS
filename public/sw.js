@@ -22,9 +22,6 @@ self.addEventListener('fetch',event=>{
     const cache=await caches.open(CACHE);
     const cached=await cache.match(event.request)||(event.request.mode==='navigate'?await cache.match('./index.html'):null);
     if(cached)return cached;
-    try{return await fetch(event.request);}catch(error){
-      if(event.request.mode==='navigate')return await cache.match('./index.html');
-      throw error;
-    }
+    return fetch(event.request);
   })());
 });

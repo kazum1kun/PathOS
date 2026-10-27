@@ -18,7 +18,7 @@ export function normalizeSettings(input = {}, strict = false) {
     const value = input?.[key];
     if (value === undefined) continue;
     const valid = choices[key] ? choices[key].includes(value)
-      : ranges[key] ? typeof value === 'number' && Number.isFinite(value) && value >= ranges[key][0] && value <= ranges[key][1] && (key === 'lineHeight' || Number.isInteger(value))
+      : ranges[key] ? typeof value === 'number' && value >= ranges[key][0] && value <= ranges[key][1] && (key === 'lineHeight' || Number.isInteger(value))
       : typeof value === 'boolean';
     if (!valid) { if (strict) throw new Error(`Choose a valid value for ${labels[key]}.`); continue; }
     settings[key] = value;

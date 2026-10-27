@@ -153,16 +153,16 @@ final class VaultStore {
             }
             body["files"] = files
         }
-        let json = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys, .fragmentsAllowed])
-        guard let text = String(data: json, encoding: .utf8) else { throw failure("Invalid library text.") }
+        let json = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        let text = String(decoding: json, as: UTF8.self)
         try retireAssets(store: store, key: key)
         try execute("INSERT OR REPLACE INTO records(store, key, game_id, version_id, body, asset_directory) VALUES (?, ?, ?, ?, ?, ?)",
                     [store, key, record["gameId"] as? String ?? "", record["versionId"] as? String ?? "", text, directory])
     }
 
     private func decode(_ row: [String: String], store: String) throws -> [String: Any] {
-        guard let text = row["body"], let data = text.data(using: .utf8),
-              var record = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw failure("A library record is damaged. Restore a backup.") }
+        guard let text = row["body"],
+              var record = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { throw failure("A library record is damaged. Restore a backup.") }
         if store == "versions", record["removed"] as? Bool == true {
             guard let files = record["files"] as? [[String: Any]], files.isEmpty, row["asset_directory"] == "" else { throw failure("Removed version metadata is damaged.") }
         } else if store == "versions" {

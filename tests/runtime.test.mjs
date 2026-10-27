@@ -11,7 +11,8 @@ import { readerStyles } from '../src/settings.js';
 function sandbox(config = {}, domDocument = null, extensions = {}) {
   const messages = [], listeners = new Map(), timers = new Map(); let nextTimer = 0;
   class Element { setAttribute(name, value) { this[name] = value; } }
-  const document = domDocument || { querySelectorAll: () => [], addEventListener(name, fn) { const list = listeners.get('doc:' + name) || []; list.push(fn); listeners.set('doc:' + name, list); } };
+  const document = domDocument || parseHTML('<html><head></head><body></body></html>').document;
+  if (!domDocument) document.addEventListener = (name, fn) => { const list = listeners.get('doc:' + name) || []; list.push(fn); listeners.set('doc:' + name, list); };
   const parent = { postMessage(message) { messages.push(JSON.parse(JSON.stringify(message))); } };
   const context = {
     console, Event, EventTarget, Response, Blob, Uint8Array, TextDecoder, TextEncoder, Object, JSON,
@@ -24,7 +25,7 @@ function sandbox(config = {}, domDocument = null, extensions = {}) {
   };
   context.window = context;
   vm.createContext(context);
-  vm.runInContext(`(${runtimeBootstrap.toString()})(${JSON.stringify({ token: 'token-test', files: {}, storage: {}, entryPath: 'index.html', ...config })}, ${inspectChoiceBlock.toString()})`, context);
+  vm.runInContext(`(${runtimeBootstrap.toString()})(${JSON.stringify({ token: 'token-test', files: {}, storage: {}, entryPath: 'index.html', ...config })}, ${inspectChoiceBlock.toString()}, ${normalizeAssetPath.toString()})`, context);
   return {
     context, messages, parent,
     run(source) { return vm.runInContext(source, context); },
@@ -213,8 +214,10 @@ test('isolated localStorage and Persist remain synchronous/asynchronous as expec
 
 test('VFS fetch and XHR read local scene assets while network is unavailable', async () => {
   const env = sandbox({ entryPath: 'mygame/index.html', files: { 'mygame/scenes/startup.txt': { url: 'blob:scene', mime: 'text/plain', data: btoa('A bundled scene') } } });
-  assert.equal(await (await env.context.fetch('scenes/startup.txt')).text(), 'A bundled scene');
-  assert.equal((await env.context.fetch('https://external.example/')).status, 404);
+  for (const path of ['scenes/startup.txt', 'scenes/startup%2Etxt?v=1', '..\\mygame\\scenes\\startup.txt', 'file:///android_asset/mygame/scenes/startup.txt', 'blob:scene', { url: 'blob:scene' }]) {
+    assert.equal(await (await env.context.fetch(path)).text(), 'A bundled scene');
+  }
+  for (const path of ['https://external.example/', '//external.example/', '../../outside.txt']) assert.equal((await env.context.fetch(path)).status, 404);
   env.run(`window.xhr = new XMLHttpRequest(); xhr.open('GET','scenes/startup.txt',false); xhr.send();`);
   assert.equal(env.context.xhr.status, 200);
   assert.equal(env.context.xhr.responseText, 'A bundled scene');
@@ -411,11 +414,12 @@ test('snapshots preserve page-start state and restore without double applying pa
   assert.equal(captured.scene.crc, 123);
   assert.equal(captured.scene.lineCount, 3);
   assert.equal(captured.scene.lines, undefined, 'chapter source must not be copied into each save');
-  env.message('restore', captured); env.flush();
-  assert.equal(env.context.stats.gold, 15);
-  assert.deepEqual(Array.from(env.context.restoreArguments), [null, false]);
-  env.message('capture', null, { id: 4 }); env.flush();
-  const response = env.messages.findLast(message => message.type === 'result' && message.id === 4);
+  const resumed = sandbox({ state: captured }); resumed.run(miniEngine);
+  resumed.run('restoreGame(null, null, false);'); resumed.flush();
+  assert.equal(resumed.context.stats.gold, 15);
+  assert.deepEqual(Array.from(resumed.context.restoreArguments), [null, false]);
+  resumed.message('capture', null, { id: 4 }); resumed.flush();
+  const response = resumed.messages.findLast(message => message.type === 'result' && message.id === 4);
   assert.equal(response.payload.snapshot.state.stats.gold, 5);
   assert.ok(env.messages.some(message => message.type === 'status' && message.payload.level === 'ready'));
 });
@@ -604,15 +608,16 @@ test('real APK ChoiceScript computeCookie and restoreGame integrate with boundar
     for (; at < source.length; at++) { if (source[at] === '{') braces++; else if (source[at] === '}' && --braces === 0) break; }
     return source.slice(start, at + 1);
   };
-  const env = sandbox(); env.run(miniEngine);
-  env.run(`var _global=window; var nav={}; var debug=false; var toJson=JSON.stringify; function isStateValid(s){return !!s?.stats?.sceneName;} function safeCall(self,fn){fn.call(self);} Scene.prototype.execute=function(){this.printLoop();};`);
-  env.run(functionSource('computeCookie') + '\n' + functionSource('restoreGame'));
+  const support = `var _global=window; var nav={}; var debug=false; var toJson=JSON.stringify; function isStateValid(s){return !!s?.stats?.sceneName;} function safeCall(self,fn){fn.call(self);} Scene.prototype.execute=function(){this.printLoop();};`;
+  const engineFunctions = functionSource('computeCookie') + '\n' + functionSource('restoreGame');
+  const env = sandbox(); env.run(miniEngine); env.run(support + engineFunctions);
   env.run(`stats.gold=7; stats.scene=new Scene('chapter',stats); stats.scene.printLoop();`); env.flush();
   const saved = env.messages.findLast(message => message.type === 'snapshot').payload;
   assert.equal(saved.state.stats.gold, 7);
-  env.message('restore', saved); env.flush();
-  assert.equal(env.context.stats.gold, 17);
-  assert.equal(env.context.stats.scene.name, 'chapter');
+  const resumed = sandbox({ state: saved });
+  resumed.run(miniEngine.replace('window.__pathosFinishLoading();', '') + support + engineFunctions + '\nwindow.__pathosFinishLoading(); restoreGame(null, null, false);'); resumed.flush();
+  assert.equal(resumed.context.stats.gold, 17);
+  assert.equal(resumed.context.stats.scene.name, 'chapter');
 });
 
 test('an author export with no storeName restores the selected snapshot on first boot', () => {

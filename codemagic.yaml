@@ -38,21 +38,10 @@ workflows:
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME"
       - name: Build for iOS Simulator without signing
-        script: |
-          set -euo pipefail
-          mkdir -p build
-          xcodebuild build \
-            -project "$XCODE_PROJECT" \
-            -scheme "$XCODE_SCHEME" \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath build/ios/simulator \
-            CODE_SIGNING_ALLOWED=NO \
-            2>&1 | tee build/ios-simulator.log
+        script: bash scripts/ci/build-ios.sh simulator
     artifacts:
       - build/ios/simulator/Build/Products/Debug-iphonesimulator/App.app
-      - build/ios-simulator.log
+      - build/logs/ios-simulator.log
 
   ios-release:
     name: PathOS signed iOS IPA

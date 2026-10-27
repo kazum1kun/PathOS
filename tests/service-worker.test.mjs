@@ -30,12 +30,12 @@ test('installing an app update fetches fresh assets instead of reusing an older 
 
 test('waiting app updates cannot mix new navigation HTML or assets into the active shell',async()=>{
   const source=(await readFile(new URL('../public/sw.js',import.meta.url),'utf8')).replace('__BUILD__','active');
-  const handlers=new Map(), opened=[], network=[];
+  const handlers=new Map(), opened=[], network=[];let offline=false;
   const active=new Map([['./index.html','active HTML'],['https://pathos.test/src/app.js','active JavaScript']]);
   const context=vm.createContext({URL,
     self:{location:{origin:'https://pathos.test'},addEventListener:(type,handler)=>handlers.set(type,handler)},
     caches:{async open(name){opened.push(name);return {match:async request=>active.get(typeof request==='string'?request:request.url)};},match(){throw new Error('Must not search waiting-build caches.');}},
-    fetch:async request=>{network.push(request.url);return 'network response';},
+    fetch:async request=>{network.push(request.url);if(offline)throw new Error('offline');return 'network response';},
   });
   vm.runInContext(source,context);
   function fetch(request){let response;handlers.get('fetch')({request:{method:'GET',mode:'cors',...request},respondWith:result=>{response=result;}});return response;}
@@ -47,4 +47,8 @@ test('waiting app updates cannot mix new navigation HTML or assets into the acti
   assert.equal(fetch({url:'https://other.test/game'}),undefined);
   assert.equal(fetch({url:'https://pathos.test/post',method:'POST'}),undefined);
   assert.ok(opened.every(name=>name==='pathos-active'));
+  offline=true;
+  assert.equal(await fetch({url:'https://pathos.test/',mode:'navigate'}),'active HTML');
+  active.delete('./index.html');
+  await assert.rejects(fetch({url:'https://pathos.test/',mode:'navigate'}),/offline/,'a missing shell propagates the network failure instead of returning an undefined response');
 });

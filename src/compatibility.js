@@ -216,7 +216,6 @@ export function assessCompatibility(save, targetVersion, sourceVersion) {
 }
 
 function copy(value) { return JSON.parse(JSON.stringify(value)); }
-function newId() { return globalThis.crypto?.randomUUID?.() ?? `save-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 
 function synchronizeChecksum(snapshot, targetVersion) {
   const scenes = sceneMap(targetVersion);
@@ -251,7 +250,7 @@ export function cloneEditedSave(save, patch = {}, name) {
   const clone = copy(save);
   if (patch.stats) Object.assign(clone.snapshot.state.stats, copy(patch.stats));
   if (patch.temps) Object.assign(clone.snapshot.state.temps, copy(patch.temps));
-  clone.id = newId(); clone.parentSaveId = save.id; clone.kind = 'edited';
+  clone.id = crypto.randomUUID(); clone.parentSaveId = save.id; clone.kind = 'edited';
   clone.createdAt = new Date().toISOString(); clone.name = name ?? `${save.name || 'Save'} (edited)`;
   validateSaveRecord(clone);
   return clone;
@@ -261,7 +260,7 @@ export function migrateSave(save, targetVersion, sourceVersion) {
   const assessment = assessCompatibility(save, targetVersion, sourceVersion);
   if (!assessment.canResume) throw new Error(assessment.reason);
   const migrated = copy(save);
-  migrated.id = newId(); migrated.parentSaveId = save.id; migrated.versionId = targetVersion.id;
+  migrated.id = crypto.randomUUID(); migrated.parentSaveId = save.id; migrated.versionId = targetVersion.id;
   migrated.kind = 'migrated'; migrated.createdAt = new Date().toISOString();
   migrated.name = `${save.name || 'Save'} (${targetVersion.label || 'updated version'})`;
   // Opaque in-game quickslots can contain instruction pointers in other,
@@ -293,7 +292,7 @@ export function restartFromCheckpoint(save, targetVersion, sourceVersion) {
   const scene = { name: checkpoint.scene.name };
   for (const key of ['crc', 'lines', 'labels']) if (targetScene[key] !== undefined && targetScene[key] !== null) scene[key] = copy(targetScene[key]);
   const restarted = copy(save);
-  restarted.id = newId(); restarted.parentSaveId = save.id; restarted.versionId = targetVersion.id;
+  restarted.id = crypto.randomUUID(); restarted.parentSaveId = save.id; restarted.versionId = targetVersion.id;
   restarted.kind = 'checkpoint'; restarted.createdAt = new Date().toISOString();
   restarted.name = `${save.name || 'Save'} (chapter restart)`;
   restarted.storage = {};

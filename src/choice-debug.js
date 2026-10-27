@@ -66,7 +66,7 @@ export function inspectChoiceBlock(scene, startLine, groups, renderedOptions) {
     if (from >= to) return { effects: [], effectNotes: ['Effects unavailable.'] };
     function emit(state, at, effect) {
       let record = records.get(at);
-      if (!record) { record = { ...effect, line: at + 1, chance: 0, beforeValues: [], afterValues: [], ranges: [] }; records.set(at, record); }
+      if (!record) { const { range, ...details } = effect; record = { ...details, chance: 0, beforeValues: [], afterValues: [], ranges: [] }; records.set(at, record); }
       record.chance += state.weight;
       for (const [key, value] of [['beforeValues', effect.before], ['afterValues', effect.after]]) {
         if (!record[key].some(item => JSON.stringify(item) === JSON.stringify(value))) record[key].push(value);
@@ -129,9 +129,9 @@ export function inspectChoiceBlock(scene, startLine, groups, renderedOptions) {
             // Decimal literals keep their continuous semantics, even if a game
             // evaluator converts their textual representation into a number.
             const integer = [low.value, high.value].every(value => String(parseInt(value, 10)) === String(value)) && ![args[1], args[2]].some(value => /^-?\d+\.\d+$/.test(value));
-            const range = { min, max, integer, upperExclusive: !integer && min !== max };
+            const range = { min, max, integer };
             emit(state, at, { kind: 'rand', name, scope: current.scope, before: current.value, beforeUnknown: state.unknown.has(name), range });
-            rolls.push({ state, name, scope: current.scope, min, max, count: min === max ? 1 : integer ? max - min + 1 : Infinity });
+            rolls.push({ state, name, scope: current.scope, min, count: min === max ? 1 : integer ? max - min + 1 : Infinity });
           }
           const extraWorlds = rolls.reduce((sum, roll) => sum + roll.count - 1, 0), expand = worlds + extraWorlds <= 128;
           if (expand) worlds += extraWorlds;
@@ -157,7 +157,7 @@ export function inspectChoiceBlock(scene, startLine, groups, renderedOptions) {
       return states;
     }
     walk(from, to, [{ target: cloneScene(), unknown: new Set(), weight: 1 }]);
-    const effects = [...records.values()].sort((a, b) => a.line - b.line);
+    const effects = [...records.values()];
     for (const effect of effects) effect.chance = Math.abs(effect.chance - 1) < 1e-9 ? 1 : Math.min(1, effect.chance);
     if (effectNotes.size || effects.some(effect => effect.kind === 'unknown')) for (const effect of effects) if (effect.chance < 1) effect.chance = undefined;
     return { effects, effectNotes: [...effectNotes] };

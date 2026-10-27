@@ -210,7 +210,7 @@ test('random integer effects enumerate dependent changes and branch probabilitie
     result = inspectChoiceBlock(s, 0, [''], [rendered(s, 'Roll'), rendered(s, 'Wait')]);
   } finally { Math.random = originalRandom; }
   const effects = result.options[0].effects;
-  assert.deepEqual(effects[0].ranges, [{ min: 1, max: 6, integer: true, upperExclusive: false }]);
+  assert.deepEqual(effects[0].ranges, [{ min: 1, max: 6, integer: true }]);
   assert.equal(effects[0].chance, 1);
   assert.ok(Math.abs(effects[1].chance - 1 / 3) < 1e-9);
   assert.deepEqual(effects[1].afterValues, [15]);
@@ -231,14 +231,14 @@ test('successive rolls preserve independence, copied rolls retain correlation, a
   }
   const s = effectScene('*choice\n  #Roll\n    *rand strength (strength - 3) strength');
   const { options } = inspectChoiceBlock(s, 0, [''], [rendered(s, 'Roll')]);
-  assert.deepEqual(options[0].effects[0].ranges, [{ min: 7, max: 10, integer: true, upperExclusive: false }]);
+  assert.deepEqual(options[0].effects[0].ranges, [{ min: 7, max: 10, integer: true }]);
 });
 
 test('continuous and large random ranges remain ranges while independent changes still parse', () => {
   for (const [bounds, expected] of [
-    ['1.0 6.0', { min: 1, max: 6, integer: false, upperExclusive: true }],
-    ['1.25 7.5', { min: 1.25, max: 7.5, integer: false, upperExclusive: true }],
-    ['1 1000', { min: 1, max: 1000, integer: true, upperExclusive: false }],
+    ['1.0 6.0', { min: 1, max: 6, integer: false }],
+    ['1.25 7.5', { min: 1.25, max: 7.5, integer: false }],
+    ['1 1000', { min: 1, max: 1000, integer: true }],
   ]) {
     const s = effectScene(`*choice\n  #Roll\n    *rand roll ${bounds}\n    *set strength 7\n    *set roll + 1\n    *if roll > 50\n      *set strength + 5`);
     s.stats.roll = 0;

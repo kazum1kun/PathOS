@@ -6,7 +6,6 @@ const MAX_SAVES = 1000;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const copy = value => JSON.parse(JSON.stringify(value));
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
-const id = () => globalThis.crypto?.randomUUID?.() ?? `save-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 export class LegacySaveError extends Error {
   constructor(code, message) { super(message); this.name = 'LegacySaveError'; this.code = code; }
@@ -132,7 +131,7 @@ export function prepareLegacySaves(input, { game, version } = {}) {
     if (!verified) warnings.push(`The saved scene “${name}” has no comparable checksum. Its source cannot be verified; explicitly select the original version that produced this save.`);
     validateReturnScenes(state, scenes, warnings);
     const record = {
-      id:id(), gameId:game.id, versionId:version.id, kind:'imported',
+      id:crypto.randomUUID(), gameId:game.id, versionId:version.id, kind:'imported',
       name:item.name || sourceKeyLabel(item.key), createdAt,
       snapshot:{ format:'story-vault-state-v1', state, scene:{ name, crc }, capturedAt:createdAt }, storage:{},
       legacyImport:{ sourceFormat:bundle ? BUNDLE_FORMAT : 'raw-choicescript', sourceGame, sourceKey:item.key, verification:verified ? 'scene-crc' : 'unverified', requiresSourceConfirmation:true, warnings },

@@ -1,5 +1,13 @@
 # Verification for version 0.1.0
 
+## Code cleanup audit (2026-10-27)
+
+Reviewed application/import/settings code, runtime and debugger, browser/native persistence and transfers, Swift bridge/store, build and release workflows, service worker, styles, and tests. Removed duplicate save/import validation, uncalled runtime APIs and native lifecycle hooks, duplicate storage notifications, impossible encoding failures, and redundant UI/API checks. Shared path normalization, asset encoding, hashing, merge decisions, and save ordering replace repeated work. Builds recreate the generated bundle so obsolete files do not enter the offline manifest.
+
+Archive expansion/CRC/path checks, save ownership and immutability, compatibility and return-stack checks, transaction rollback, message authentication, native frame isolation, and release/signing checks remain. Third-party and generated dependencies were left intact. Existing tests were retained or adjusted to exercise the production startup path; a new build regression covers obsolete assets.
+
+The full suite passes 151 tests with three optional private-APK checks skipped. Syntax checks, build, native bundle/project metadata checks, and injected bridge tests pass. A fresh browser library imported the demo, advanced to the tower, saved, and resumed with courage 55 and supplies 3, without browser errors. Swift compilation and device tests require macOS/Xcode.
+
 ## Reader choice colors and Next borders (2026-10-27)
 
 Reader appearance overrides now cover choice hover, checked and keyboard-focused rows, including inherited label text. Dark and light modes use matching foreground/background pairs, and action controls receive a complete solid border instead of only a border color. Native radio/check controls use the theme accent. Selected states take precedence over hover, and the original game appearance option still bypasses these overrides.
