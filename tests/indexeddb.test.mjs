@@ -170,3 +170,55 @@ test('delete cascades through version/save indexes and a compressed backup resto
   assert.equal((await vault.getAll('saves')).length, 1);
   vault.close();
 });
+
+test('removing versions keeps saves and source fingerprints until the last installed version is removed', async () => {
+  const vault = await openVault({ indexedDB: new IDBFactory() });
+  const { game, version, save } = fixture();
+  version.sceneIndex = { chapter1: { hash: 'chapter-hash', crc: 123, lines: Array(30).fill('Source text'), labels: { start: 0 } } };
+  await vault.importVersion(game, version); await vault.putSave(save);
+  const newer = { ...version, id: 'v2', contentHash: 'two', createdAt: '2026-10-17T00:00:00Z' };
+  await vault.importVersion({ ...game, activeVersionId: 'v2' }, newer);
+  await vault.putSave({ ...save, id: 'second-save', versionId: 'v2' });
+  const other = { ...game, id: 'other', activeVersionId: 'other-version' };
+  await vault.importVersion(other, { ...version, id: 'other-version', gameId: other.id });
+  await vault.putSave({ ...save, id: 'other-save', gameId: other.id, versionId: 'other-version' });
+  assert.deepEqual(await vault.deleteVersion(game.id, version.id), { gameRemoved: false, deletedSaves: 0 });
+  const removed = await vault.get('versions', version.id);
+  assert.equal(removed.removed, true); assert.deepEqual(removed.files, []);
+  assert.equal(removed.sceneIndex.chapter1.hash, 'chapter-hash');
+  assert.equal(removed.sceneIndex.chapter1.lines, undefined);
+  assert.deepEqual(await vault.get('saves', save.id), save);
+  assert.equal((await vault.get('games', game.id)).activeVersionId, 'v2');
+  const backup = await vault.exportBackup();
+  await vault.deleteGame(game.id); await vault.restoreBackup(backup);
+  assert.deepEqual(await vault.get('versions', version.id), removed, 'retained save metadata must survive a backup');
+  const result = await vault.deleteVersion(game.id, 'v2', { allowGameRemoval: true });
+  assert.deepEqual(result, { gameRemoved: true, deletedSaves: 2 });
+  assert.equal(await vault.get('games', game.id), undefined);
+  assert.equal((await vault.getAll('versions', 'gameId', game.id)).length, 0);
+  assert.equal((await vault.getAll('saves', 'gameId', game.id)).length, 0);
+  assert.ok(await vault.get('saves', 'other-save'));
+  assert.ok(await vault.get('versions', 'other-version'));
+  vault.close();
+});
+
+test('removing the active version selects a remaining version and guards stale or unrelated removal', async () => {
+  const vault = await openVault({ indexedDB: new IDBFactory() });
+  const { game, version, save } = fixture();
+  await vault.importVersion(game, version); await vault.putSave(save);
+  await vault.importVersion({ ...game, activeVersionId: 'v2' }, { ...version, id: 'v2', contentHash: 'two' });
+  await assert.rejects(vault.deleteVersion('unrelated', 'v2'), /no longer installed|different game/);
+  await vault.deleteVersion(game.id, 'v2');
+  assert.equal(await vault.get('versions', 'v2'), undefined, 'unused removed versions need no metadata record');
+  assert.equal((await vault.get('games', game.id)).activeVersionId, version.id);
+  await assert.rejects(vault.deleteVersion(game.id, version.id), /last version/);
+  assert.deepEqual(await vault.get('saves', save.id), save);
+  const originalBackup = await vault.exportBackup();
+  await vault.importVersion({ ...game, activeVersionId: 'v2' }, { ...version, id: 'v2', contentHash: 'two' });
+  await vault.deleteVersion(game.id, version.id);
+  await vault.restoreBackup(originalBackup);
+  assert.deepEqual((await vault.get('versions', version.id)).files, version.files, 'restoring a backup reinstalls removed game files');
+  assert.equal((await vault.get('versions', version.id)).removed, undefined);
+  assert.deepEqual(await vault.get('saves', save.id), save);
+  vault.close();
+});

@@ -128,7 +128,9 @@ final class VaultStore {
     private func put(_ record: [String: Any], store: String, key: String) throws {
         var body = record
         var directory = ""
-        if store == "versions" {
+        if store == "versions", record["removed"] as? Bool == true {
+            guard let files = record["files"] as? [[String: Any]], files.isEmpty else { throw failure("A removed version must not contain game files.") }
+        } else if store == "versions" {
             guard var files = record["files"] as? [[String: Any]], !files.isEmpty else { throw failure("A game version has no files.") }
             directory = UUID().uuidString
             let folder = assets.appendingPathComponent(directory, isDirectory: true)
@@ -161,7 +163,9 @@ final class VaultStore {
     private func decode(_ row: [String: String], store: String) throws -> [String: Any] {
         guard let text = row["body"], let data = text.data(using: .utf8),
               var record = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw failure("A library record is damaged. Restore a backup.") }
-        if store == "versions" {
+        if store == "versions", record["removed"] as? Bool == true {
+            guard let files = record["files"] as? [[String: Any]], files.isEmpty, row["asset_directory"] == "" else { throw failure("Removed version metadata is damaged.") }
+        } else if store == "versions" {
             guard let directory = row["asset_directory"], UUID(uuidString: directory) != nil,
                   var files = record["files"] as? [[String: Any]] else { throw failure("A game file list is damaged.") }
             for index in files.indices {

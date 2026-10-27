@@ -1,5 +1,11 @@
 # Verification for version 0.1.0
 
+## Removing imported versions (2026-10-27)
+
+Each installed version has a Remove action with a confirmation. While another version remains, removal frees package files and preserves saves plus compact source fingerprints. Saved progress can migrate to a compatible installed version or reconnect to the original version when its package is reimported. The active version switches to a remaining package. Removing the final package deletes the game, all saved progress, and retained source metadata in one transaction. The empty library remains usable, and other games are unaffected.
+
+The suite passes 131 tests with three optional private-game checks skipped. Automated coverage exercises cancellation, storage failures, active-version replacement, save retention and migration, reimport, compressed backup restore, final-version cleanup, unrelated games, and rollback in both browser and native backends. A stale confirmation cannot delete the final version and its saves without explicit game-removal confirmation. Browser checks verified the Versions action on desktop and the final-version confirmation at 390px width; cancelling kept the demo and all three saves, with no console warnings or errors. Native filesystem tests also cover releasing removed-version assets and retaining them on rollback; those Swift tests require macOS.
+
 ## Compressed exports and compact saves (2026-10-27)
 
 Backups use a version-2 ZIP manifest with raw binary assets, DEFLATE compression, and SHA-256 references that deduplicate identical files across installed versions. Individual save exports are compressed ZIP files too. Save records retain state, chapter checkpoints, quick-save slots, and preferences, while dropping duplicate scene source/labels and the engine's regenerable current, temporary, and recovery caches. Existing stored saves compact atomically when the app opens.

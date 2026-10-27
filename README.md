@@ -42,6 +42,8 @@ Each save belongs to a game in your library and remembers the exact version that
 
 These are structural checks, so they can't catch every change an author makes to the story's logic. See [save compatibility](docs/save-compatibility.md) for the exact rules and what's supported.
 
+Open a game's **Versions** tab and choose **Remove** to free an imported version's package files. While another version remains, all saves stay in your library. Compatible saves can resume on a remaining version; reimport an incompatible save's original version to use it again. Removing the active version selects a remaining one. Removing the last version asks you to confirm deleting the game and all its saves together.
+
 ## Debug choices
 
 While playing, turn on **Debug choices** in the reader toolbar to inspect choice conditions and their true/false results. Hidden and disabled options appear with their conditions, including conditional branches and reuse restrictions. Use **Choose** for an available option or **Force-select** to bypass a hidden or disabled option's checks. Forcing a choice can put the story in an invalid state; it does not grant the stats or other requirements the condition checks.

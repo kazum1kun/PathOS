@@ -133,3 +133,28 @@ test('native batch deletion rolls back all selected snapshots on a write failure
     assert.equal((await vault.getAll('versions')).length,1);
   } finally {vault.close();legacy.close();}
 });
+
+test('native version removal preserves saves, frees package data, and rolls back failed removal', async () => {
+  const { options, legacy } = await legacyLibrary(), boundary = nativeBoundary();
+  const vault = await openVault({ ...options, nativeStorage: boundary.bridge });
+  try {
+    await vault.importVersion({ ...game, activeVersionId: 'v2' }, { ...version, id: 'v2', contentHash: 'two' });
+    boundary.fail = request => request.operation === 'put' && request.store === 'games';
+    await assert.rejects(vault.deleteVersion(game.id, 'v2'), /disk failure/);
+    boundary.fail = null;
+    assert.deepEqual((await vault.get('versions', 'v2')).files, version.files);
+    assert.equal((await vault.get('games', game.id)).activeVersionId, 'v2');
+    await vault.deleteVersion(game.id, version.id);
+    assert.deepEqual((await vault.get('versions', version.id)).files, []);
+    assert.deepEqual(await vault.get('saves', save.id), save);
+    boundary.fail = request => request.operation === 'delete' && request.store === 'saves';
+    await assert.rejects(vault.deleteVersion(game.id, 'v2', { allowGameRemoval: true }), /disk failure/);
+    boundary.fail = null;
+    assert.ok(await vault.get('versions', 'v2'));
+    assert.deepEqual(await vault.get('saves', save.id), save);
+    await vault.deleteVersion(game.id, 'v2', { allowGameRemoval: true });
+    assert.equal((await vault.getAll('games')).length, 0);
+    assert.equal((await vault.getAll('versions')).length, 0);
+    assert.equal((await vault.getAll('saves')).length, 0);
+  } finally { vault.close(); legacy.close(); }
+});

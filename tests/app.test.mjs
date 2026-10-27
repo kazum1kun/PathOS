@@ -374,6 +374,70 @@ test('app lists previous-version saves and creates a separate compatible updated
   } finally { await h.close(); }
 });
 
+test('version removal confirms, preserves saves on remaining versions, and can resume a compatible copy', async () => {
+  const original = save(), h = await harness({ installed: [version(), version('v2')], saved: [original] });
+  try {
+    h.document.querySelector('[data-tab="versions"]').click();
+    h.document.querySelector('[data-action="delete-version"][data-id="v1"]').click();
+    assert.match(h.document.querySelector('#modal-body').textContent, /all 1 saved snapshot stay/);
+    h.document.querySelector('[data-close]').click();
+    assert.deepEqual((await h.vault.get('versions', 'v1')).files, version().files);
+    h.document.querySelector('[data-action="delete-version"][data-id="v1"]').click();
+    const remove = h.vault.deleteVersion;
+    h.vault.deleteVersion = async () => { throw new Error('Storage unavailable'); };
+    await h.document.querySelector('#remove-version-confirm').onclick();
+    assert.equal(h.document.querySelector('#remove-version-error').textContent, 'Storage unavailable');
+    assert.equal(h.document.querySelector('#remove-version-confirm').disabled, false);
+    h.vault.deleteVersion = remove;
+    await h.document.querySelector('#remove-version-confirm').onclick();
+    assert.equal(h.document.querySelector('[data-action="delete-version"][data-id="v1"]'), null);
+    assert.match(h.document.querySelector('.game-card').textContent, /1 version · 1 save/);
+    assert.deepEqual(await h.vault.get('saves', original.id), original);
+    h.document.querySelector('[data-tab="saves"]').click();
+    assert.match(h.document.querySelector('#detail').textContent, /Removed from device/);
+    await h.app.handleAction('resume', original.id);
+    assert.equal(h.document.querySelector('#resume-original'), null);
+    assert.match(h.document.querySelector('#modal-body').textContent, /Import it again/);
+    await clickAndWait(h.document.querySelector('#resume-active'), () => h.players.length === 1);
+    assert.equal(h.players[0].options.state.state.stats.strength, original.snapshot.state.stats.strength);
+    assert.deepEqual(await h.vault.get('saves', original.id), original);
+  } finally { await h.close(); }
+});
+
+test('removing the last version clears the game and saves and restores the usable empty library', async () => {
+  const h = await harness({ saved: [save()] });
+  try {
+    h.document.querySelector('[data-tab="versions"]').click();
+    h.document.querySelector('[data-action="delete-version"]').click();
+    assert.match(h.document.querySelector('#modal-body').textContent, /last installed version.*all 1 saved snapshot/);
+    assert.equal(h.document.querySelector('#remove-version-confirm').textContent, 'Remove game and saves');
+    await h.document.querySelector('#remove-version-confirm').onclick();
+    assert.equal((await h.vault.getAll('games')).length, 0);
+    assert.equal((await h.vault.getAll('versions')).length, 0);
+    assert.equal((await h.vault.getAll('saves')).length, 0);
+    assert.equal(h.document.querySelector('#game-count').textContent, '0');
+    assert.equal(h.document.querySelector('#menu-import-save').disabled, true);
+    assert.equal(h.document.querySelector('#play-new'), null);
+    assert.ok(h.document.querySelector('#demo'));
+    await clickAndWait(h.document.querySelector('#demo'), () => h.document.querySelector('#confirm-import'));
+  } finally { await h.close(); }
+});
+
+test('reimporting a removed version reconnects retained saves to its original version identity', async () => {
+  const h = await harness({ installed: [version(), version('v2')], saved: [save()], archiveCandidate: version() });
+  try {
+    await h.vault.deleteVersion(game.id, 'v1'); await h.app.refresh();
+    await h.app.importArchive(new File(['APK fixture'], 'original.apk'), game.id);
+    h.document.querySelector('#entry option').selected = true;
+    await h.document.querySelector('#confirm-import').onclick();
+    assert.equal(h.document.querySelector('#import-error')?.textContent || '', '');
+    const reimported = await h.vault.get('versions', 'v1');
+    assert.equal(reimported.removed, undefined);
+    assert.deepEqual(reimported.files, version().files);
+    assert.equal((await h.vault.get('saves', 'original-save')).versionId, reimported.id);
+  } finally { await h.close(); }
+});
+
 test('app imports an APK update into the same game without moving or overwriting its saves', async () => {
   const original = save();
   const candidate = version('candidate-v2', { contentHash: 'new-version-fingerprint', storeName: 'a-renamed-storage-namespace', versionName: '2.0' });

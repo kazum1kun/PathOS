@@ -120,6 +120,8 @@ h1{font-size:46px;line-height:1.05;font-weight:normal;letter-spacing:-.015em}
 .save-row:not(.kind-auto)::before{border-color:var(--ribbon);background:var(--ribbon)}
 .version-row.is-active::before{border-color:var(--ink);background:var(--ink)}
 .save-row strong,.version-row strong{display:block;font-size:17px;font-weight:600;line-height:1.3}
+.version-row>div:first-child{min-width:0}
+.version-row strong{overflow-wrap:anywhere}
 .save-preview{margin:6px 0;font-size:14px;line-height:1.5;color:var(--ink-2);max-width:62ch}
 .toolbar-actions{display:flex;gap:10px;flex-wrap:wrap}
 .bulk-controls{position:sticky;top:8px;z-index:2;padding:12px;background:var(--sheet);border:1px solid var(--rule);gap:12px;flex-wrap:wrap}

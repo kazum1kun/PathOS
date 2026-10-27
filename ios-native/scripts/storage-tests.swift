@@ -90,6 +90,26 @@ import Foundation
         try call(store!, token, "delete", ["store": "versions", "key": "v"])
         try call(store!, token, "commit")
         try require(!FileManager.default.fileExists(atPath: folders[0].path), "Committed deletion must clean up its assets")
+
+        // Removed-version fingerprints keep saves verifiable without retaining
+        // package files. Rollback must keep the original immutable directory.
+        token = try begin(store!)
+        try call(store!, token, "put", ["store": "versions", "record": version])
+        try call(store!, token, "commit")
+        let installedFolders = try FileManager.default.contentsOfDirectory(at: assetRoot, includingPropertiesForKeys: nil)
+        let removed: [String: Any] = ["id": "v", "gameId": "g", "removed": true, "files": [[String: Any]]()]
+        token = try begin(store!)
+        try call(store!, token, "put", ["store": "versions", "record": removed])
+        try call(store!, token, "rollback")
+        try require(FileManager.default.fileExists(atPath: installedFolders[0].path), "Rolled-back removal must keep package files")
+        token = try begin(store!)
+        try call(store!, token, "put", ["store": "versions", "record": removed])
+        try call(store!, token, "commit")
+        try require(!FileManager.default.fileExists(atPath: installedFolders[0].path), "Removed-version metadata must release package files")
+        token = try begin(store!, "readonly")
+        let metadata = try call(store!, token, "get", ["store": "versions", "key": "v"]) as! [String: Any]
+        try require(metadata["removed"] as? Bool == true && (metadata["files"] as? [[String: Any]])?.isEmpty == true, "Removed version must reopen without game files")
+        try call(store!, token, "commit")
         store = nil
         print("Native SQLite/filesystem tests passed: reopen, migration marker, binary assets, rollback, crash recovery, key-only queries, deletion and transaction guards.")
     }

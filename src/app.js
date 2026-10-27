@@ -21,6 +21,7 @@ let runtime = null, session = null, storage = {}, saveQueue = Promise.resolve(),
 let selectingSaves = false, selectionGame = null;
 let debugChoices = false;
 const selectedSaves = new Set();
+const emptyDetail = $('#detail').innerHTML;
 
 const disclosures = [['main-menu-toggle','main-menu'],['reader-menu-toggle','reader-actions']];
 function closeMenus(focus=false) {
@@ -59,16 +60,16 @@ function render() {
   $('#menu-import-save').disabled=!selectedGame;
   $('#menu-game-context').textContent=selectedGame?`Into ${selectedGame.title}`:'Import a game first';
   const term=$('#search').value.toLowerCase();
-  $('#games').innerHTML=games.filter(g=>g.title.toLowerCase().includes(term)).map(g=>`<button class="game-card ${g.id===selected?'active':''}" data-game="${esc(g.id)}"><span class="spine" style="--spine:${spine(g.id)}" aria-hidden="true">${esc(g.title.charAt(0).toUpperCase())}</span><span><strong>${esc(g.title)}</strong><small>${plural(versions.filter(v=>v.gameId===g.id).length,'version')} · ${plural(saves.filter(s=>s.gameId===g.id).length,'save')}</small></span></button>`).join('');
+  $('#games').innerHTML=games.filter(g=>g.title.toLowerCase().includes(term)).map(g=>`<button class="game-card ${g.id===selected?'active':''}" data-game="${esc(g.id)}"><span class="spine" style="--spine:${spine(g.id)}" aria-hidden="true">${esc(g.title.charAt(0).toUpperCase())}</span><span><strong>${esc(g.title)}</strong><small>${plural(versions.filter(v=>v.gameId===g.id&&!v.removed).length,'version')} · ${plural(saves.filter(s=>s.gameId===g.id).length,'save')}</small></span></button>`).join('');
   $('#games').querySelectorAll('[data-game]').forEach(el=>el.onclick=()=>{selected=el.dataset.game;render();});
-  if(!selected)return;
-  const game=games.find(g=>g.id===selected), installed=versions.filter(v=>v.gameId===selected).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  if(!selected){selectedSaves.clear();selectingSaves=false;selectionGame=null;tab='saves';$('#detail').innerHTML=emptyDetail;$('#demo').onclick=exploreDemo;return;}
+  const game=games.find(g=>g.id===selected), installed=versions.filter(v=>v.gameId===selected&&!v.removed).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
   const active=installed.find(v=>v.id===game.activeVersionId) || installed[0];
   const gameSaves=saves.filter(s=>s.gameId===selected).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
   if(selectionGame!==selected || tab!=='saves'){selectedSaves.clear();selectingSaves=false;selectionGame=selected;}
   const visibleIds=new Set(gameSaves.map(save=>save.id));
   for(const id of selectedSaves)if(!visibleIds.has(id))selectedSaves.delete(id);
-  $('#detail').innerHTML=`<div class="detail-head"><div>${game.identity?`<p class="identity">${esc(game.identity)}</p>`:''}<h2>${esc(game.title)}</h2><p class="detail-sub">${esc(active?.label||'No version installed')} · ${installed.length} installed ${installed.length===1?'version':'versions'}</p></div><button class="primary" id="play-new">Start a new playthrough</button></div><div class="tabs" role="tablist"><button role="tab" aria-selected="${tab==='saves'}" class="tab ${tab==='saves'?'active':''}" data-tab="saves">Saves <span class="count">${gameSaves.length}</span></button><button role="tab" aria-selected="${tab==='versions'}" class="tab ${tab==='versions'?'active':''}" data-tab="versions">Versions <span class="count">${installed.length}</span></button></div>${tab==='saves'?`${savesToolbar(gameSaves)}<div class="save-list">${gameSaves.length?gameSaves.map(s=>saveRow(s,active)).join(''):'<div class="no-saves">Your next choice is the first one.<br>Start playing to create automatic snapshots, or save a named one at any time.</div>'}</div>`:`<div class="toolbar"><p>Import updates into this game to keep its saves together.</p><button id="add-version" class="small-button">Import update</button></div><div class="save-list">${installed.map(v=>`<div class="version-row ${v.id===active.id?'is-active':''}"><div><strong>${esc(v.label)} ${v.id===active.id?'<span class="badge">Active</span>':''}</strong><small>Imported ${date(v.createdAt)} · ${bytes(v.files.reduce((n,f)=>n+f.data.length,0))}<br>${Object.keys(v.sceneIndex||{}).length} indexed scenes · ${esc(v.storeName||'No storage ID')}</small></div><div class="row-actions">${v.id!==active.id?button('activate','Make active',`data-id="${esc(v.id)}"`):''}${button('play-version','Start new',`data-id="${esc(v.id)}"`)}</div></div>`).join('')}</div>`}<div class="update-note">Each save stays linked to the version that created it. Before restoring a save on a different version, PathOS checks whether its chapter and return points have changed. If they have, resume it on the original version.</div>`;
+  $('#detail').innerHTML=`<div class="detail-head"><div>${game.identity?`<p class="identity">${esc(game.identity)}</p>`:''}<h2>${esc(game.title)}</h2><p class="detail-sub">${esc(active?.label||'No version installed')} · ${installed.length} installed ${installed.length===1?'version':'versions'}</p></div><button class="primary" id="play-new">Start a new playthrough</button></div><div class="tabs" role="tablist"><button role="tab" aria-selected="${tab==='saves'}" class="tab ${tab==='saves'?'active':''}" data-tab="saves">Saves <span class="count">${gameSaves.length}</span></button><button role="tab" aria-selected="${tab==='versions'}" class="tab ${tab==='versions'?'active':''}" data-tab="versions">Versions <span class="count">${installed.length}</span></button></div>${tab==='saves'?`${savesToolbar(gameSaves)}<div class="save-list">${gameSaves.length?gameSaves.map(s=>saveRow(s,active)).join(''):'<div class="no-saves">Your next choice is the first one.<br>Start playing to create automatic snapshots, or save a named one at any time.</div>'}</div>`:`<div class="toolbar"><p>Import updates into this game to keep its saves together.</p><button id="add-version" class="small-button">Import update</button></div><div class="save-list">${installed.map(v=>`<div class="version-row ${v.id===active.id?'is-active':''}"><div><strong>${esc(v.label)} ${v.id===active.id?'<span class="badge">Active</span>':''}</strong><small>Imported ${date(v.createdAt)} · ${bytes(v.files.reduce((n,f)=>n+f.data.length,0))}<br>${Object.keys(v.sceneIndex||{}).length} indexed scenes · ${esc(v.storeName||'No storage ID')}</small></div><div class="row-actions">${v.id!==active.id?button('activate','Make active',`data-id="${esc(v.id)}"`):''}${button('play-version','Start new',`data-id="${esc(v.id)}"`)}${button('delete-version','Remove',`class="danger" data-id="${esc(v.id)}" aria-label="Remove ${esc(v.label)}"`)}</div></div>`).join('')}</div>`}<div class="update-note">Each save stays linked to the version that created it. Before restoring a save on a different version, PathOS checks whether its chapter and return points have changed. If they have, resume it on the original version.</div>`;
   $('#detail').querySelectorAll('[data-tab]').forEach(el=>el.onclick=()=>{tab=el.dataset.tab;render();});
   $('#play-new').onclick=()=>launch(game,active).catch(report);
   $('#import-save')?.addEventListener('click',()=>$('#save-file').click());
@@ -119,16 +120,35 @@ function confirmDeleteSaves(records) {
     };
   });
 }
+function confirmDeleteVersion(game,version) {
+  if(!version||version.gameId!==game.id||version.removed)throw new Error('Choose an installed version from this game.');
+  const last=versions.filter(item=>item.gameId===game.id&&!item.removed).length===1;
+  const count=saves.filter(save=>save.gameId===game.id).length;
+  modal(`<h2>${last?'Remove this game?':'Remove this version?'}</h2><p><strong>${esc(game.title)} · ${esc(version.label)}</strong></p><p>${last?`This is the last installed version. Removing it permanently deletes the game and all ${plural(count,'saved snapshot')}.`:`This removes the version’s game files. Other installed versions and all ${plural(count,'saved snapshot')} stay in your library. A save that cannot use another version will need this version imported again.`}</p><div class="modal-error" id="remove-version-error"></div><div class="modal-actions"><button data-close>Cancel</button><button id="remove-version-confirm" class="primary">${last?'Remove game and saves':'Remove version'}</button></div>`,()=>{
+    const confirm=$('#remove-version-confirm'),error=$('#remove-version-error');
+    confirm.onclick=async()=>{
+      confirm.disabled=true;error.textContent='';
+      try{
+        if(session?.game.id===game.id)throw new Error('Return to the library before removing a version of this game.');
+        const result=await db.deleteVersion(game.id,version.id,{allowGameRemoval:last});
+        selectedSaves.clear();selectingSaves=false;if(result.gameRemoved)tab='saves';
+        await refresh();$('#modal').close();
+        notify(result.gameRemoved?`${game.title} removed, along with ${plural(result.deletedSaves,'saved snapshot')}.`:`${version.label} removed. Your saves are still in the library.`);
+      }catch(e){error.textContent=e.message;confirm.disabled=false;}
+    };
+  });
+}
 function saveRow(save,active) {
   const source=versions.find(v=>v.id===save.versionId), compatibility=assessCompatibility(save,active,source);
   const label=compatibility.status==='exact'?'Matches active version':compatibility.canResume?'Available on active version':'Play on original version';
   const automatic=save.kind==='auto', title=saveTitle(save);
-  return `<div class="save-row kind-${esc(save.kind||'manual')}${selectingSaves?' is-selectable':''}">${selectingSaves?`<label class="save-select"><input type="checkbox" data-save-select="${esc(save.id)}" aria-label="${esc(`Select ${title}, ${save.snapshot.scene.name}, line ${save.snapshot.state.lineNum+1}, ${date(save.createdAt)}`)}"></label>`:''}<div class="save-description"><strong>${esc(title)} ${automatic?'<span class="badge">Automatic</span>':''}</strong>${save.snapshot.preview?`<p class="save-preview">${esc(save.snapshot.preview)}</p>`:''}<small>${esc(save.snapshot.scene.name)} · line ${save.snapshot.state.lineNum+1} · ${date(save.createdAt)}<br>${esc(source?.label||'Original version missing')}</small><span class="compat ${compatibility.canResume?'':'blocked'}">${label}</span></div>${selectingSaves?'':`<div class="row-actions">${button('resume','Resume',`class="secondary" data-id="${esc(save.id)}"`)}${button('edit','Edit',`data-id="${esc(save.id)}"`)}${button('export','Export',`data-id="${esc(save.id)}"`)}${button('delete','Delete',`class="danger" data-id="${esc(save.id)}"`)}</div>`}</div>`;
+  return `<div class="save-row kind-${esc(save.kind||'manual')}${selectingSaves?' is-selectable':''}">${selectingSaves?`<label class="save-select"><input type="checkbox" data-save-select="${esc(save.id)}" aria-label="${esc(`Select ${title}, ${save.snapshot.scene.name}, line ${save.snapshot.state.lineNum+1}, ${date(save.createdAt)}`)}"></label>`:''}<div class="save-description"><strong>${esc(title)} ${automatic?'<span class="badge">Automatic</span>':''}</strong>${save.snapshot.preview?`<p class="save-preview">${esc(save.snapshot.preview)}</p>`:''}<small>${esc(save.snapshot.scene.name)} · line ${save.snapshot.state.lineNum+1} · ${date(save.createdAt)}<br>${esc(source?.label||'Original version missing')}${source?.removed?' · Removed from device':''}</small><span class="compat ${compatibility.canResume?'':'blocked'}">${label}</span></div>${selectingSaves?'':`<div class="row-actions">${button('resume','Resume',`class="secondary" data-id="${esc(save.id)}"`)}${button('edit','Edit',`data-id="${esc(save.id)}"`)}${button('export','Export',`data-id="${esc(save.id)}"`)}${button('delete','Delete',`class="danger" data-id="${esc(save.id)}"`)}</div>`}</div>`;
 }
 async function handleAction(action,id) {
   const save=saves.find(s=>s.id===id), game=games.find(g=>g.id===selected), active=versions.find(v=>v.id===game.activeVersionId);
   if(action==='activate'){await db.put('games',{...game,activeVersionId:id});await refresh();return;}
   if(action==='play-version'){await launch(game,versions.find(v=>v.id===id));return;}
+  if(action==='delete-version'){confirmDeleteVersion(game,versions.find(v=>v.id===id));return;}
   if(action==='edit'){openEditor(save);return;}
   if(action==='export'){await exportFile(`${safeName(game.title)}-${safeName(save.name)}.pathos-save.zip`,await encodeSave({game:{identity:game.identity,title:game.title},source:{contentHash:versions.find(v=>v.id===save.versionId)?.contentHash},save}));return;}
   if(action==='delete'){
@@ -137,7 +157,7 @@ async function handleAction(action,id) {
   if(action==='resume'){
     const source=versions.find(v=>v.id===save.versionId), check=assessCompatibility(save,active,source);
     if(check.status==='exact'){await launch(game,active,save);return;}
-    modal(`<h2>Choose a version</h2><p>${esc(check.reason)}</p>${check.warnings.map(w=>`<p>${esc(w)}</p>`).join('')}<div class="metadata"><span>Save: ${esc(source?.label||'unknown')}</span><span>Active: ${esc(active?.label||'unknown')}</span></div><p>Restarting the chapter plays the updated chapter from its beginning, using your stats from just before you entered it. Some changes by the author may still mean starting a new playthrough. A restarted chapter begins with empty in-game storage; the game’s built-in save slots and preferences stay with your original save.</p><div class="modal-error" id="resume-error"></div><div class="modal-actions"><button data-close>Cancel</button>${source?'<button id="resume-original" class="secondary">Use original version</button>':''}${check.canResume?'<button id="resume-active" class="primary">Resume a copy on active version</button>':''}${!check.canResume&&check.canRestartCheckpoint?'<button id="restart-checkpoint" class="secondary">Restart chapter on active version</button>':''}</div>`,()=>{
+    modal(`<h2>Choose a version</h2><p>${esc(check.reason)}</p>${source?.removed?'<p>The original version was removed from this device. Import it again to resume on that version.</p>':''}${check.warnings.map(w=>`<p>${esc(w)}</p>`).join('')}<div class="metadata"><span>Save: ${esc(source?.label||'unknown')}</span><span>Active: ${esc(active?.label||'unknown')}</span></div><p>Restarting the chapter plays the updated chapter from its beginning, using your stats from just before you entered it. Some changes by the author may still mean starting a new playthrough. A restarted chapter begins with empty in-game storage; the game’s built-in save slots and preferences stay with your original save.</p><div class="modal-error" id="resume-error"></div><div class="modal-actions"><button data-close>Cancel</button>${source&&!source.removed?'<button id="resume-original" class="secondary">Use original version</button>':''}${check.canResume?'<button id="resume-active" class="primary">Resume a copy on active version</button>':''}${!check.canResume&&check.canRestartCheckpoint?'<button id="restart-checkpoint" class="secondary">Restart chapter on active version</button>':''}</div>`,()=>{
       $('#restart-checkpoint')?.addEventListener('click',async()=>{try{const restarted=restartFromCheckpoint(save,active,source);await db.putSave(restarted);$('#modal').close();await launch(game,active,restarted);}catch(e){$('#resume-error').textContent=e.message;}});
       $('#resume-original')?.addEventListener('click',()=>{$('#modal').close();launch(game,source,save).catch(report);});
       $('#resume-active')?.addEventListener('click',async()=>{try{const migrated=migrateSave(save,active,source);await db.putSave(migrated);$('#modal').close();await launch(game,active,migrated);}catch(e){$('#resume-error').textContent=e.message;}});
@@ -161,8 +181,8 @@ async function importArchive(file,targetGameId) {
           const candidate=candidates[Number($('#entry').value)], destination=$('#destination').value;
           const existing=games.find(g=>g.id===destination);
           const duplicate=versions.find(v=>v.gameId===destination&&v.contentHash===candidate.contentHash);
-          if(duplicate)throw new Error(`This exact game version is already installed as “${duplicate.label}”.`);
-          const now=new Date().toISOString(), versionId=uid();
+          if(duplicate&&!duplicate.removed)throw new Error(`This exact game version is already installed as “${duplicate.label}”.`);
+          const now=new Date().toISOString(), versionId=duplicate?.id||uid();
           const game=existing?{...existing,activeVersionId:versionId}:{id:uid(),title:$('#game-title').value.trim()||candidate.title,identity:candidate.storeName||'',activeVersionId:versionId,createdAt:now};
           const version={...candidate,id:versionId,gameId:game.id,label:$('#version-label').value.trim()||'Imported version',createdAt:now,filename:file.name};
           await db.importVersion(game,version);
@@ -177,7 +197,7 @@ async function importArchive(file,targetGameId) {
 
 async function launch(game,version,save) {
   if(launching)return;
-  if(!version)throw new Error('No game version is installed.');
+  if(!version||version.removed)throw new Error('Import this game version again before playing it.');
   closeMenus();
   launching=true;$('#leave-player').disabled=true;
   try{
@@ -282,13 +302,13 @@ async function importSave(file){
     return previewLegacyImport(envelope,game);
   }
   if(envelope.version!==2)throw new Error('This PathOS save file uses an unsupported format version.');
-  const contentHash=envelope.source?.contentHash, source=versions.find(v=>v.gameId===game.id&&v.contentHash===contentHash);
+  const contentHash=envelope.source?.contentHash, source=versions.find(v=>v.gameId===game.id&&!v.removed&&v.contentHash===contentHash);
   if(!source)throw new Error('The game version that created this save isn’t installed for the selected game. Install that version first so the save can be verified.');
   const record={...envelope.save,id:uid(),gameId:game.id,versionId:source.id,createdAt:new Date().toISOString(),name:(envelope.save.name||'Imported save')+' (imported)'};
   validateSaveRecord(record);await db.putSave(record);await refresh();notify('Save imported into the selected game.');
 }
 function previewLegacyImport(envelope,game){
-  const installed=versions.filter(v=>v.gameId===game.id);
+  const installed=versions.filter(v=>v.gameId===game.id&&!v.removed);
   modal(`<h2>Import an earlier save</h2><p>Choose the game version that created this ChoiceScript save. Raw saves and full save bundles from the earlier DinoKnights editor are supported.</p><div class="form-row"><label for="legacy-version">Original game version</label><select id="legacy-version">${installed.map(v=>`<option value="${esc(v.id)}" ${game.activeVersionId===v.id?'selected':''}>${esc(v.label)}</option>`).join('')}</select></div><div id="legacy-preview"></div><div class="form-row"><label><input id="legacy-confirm" type="checkbox" style="width:auto;margin-right:8px">This save belongs to this game and the selected original version.</label></div><div class="modal-error" id="legacy-error"></div><div class="modal-actions"><button data-close>Cancel</button><button id="legacy-import" class="primary" disabled>Import saved positions</button></div>`,()=>{
     let prepared=null;
     function preview(){
@@ -351,7 +371,8 @@ document.addEventListener('click',event=>{if(!event.target.closest('.topbar,.pla
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&disclosures.some(([id])=>$('#'+id).getAttribute('aria-expanded')==='true')){event.preventDefault();closeMenus(true);}});
 $('#leave-player').onclick=()=>leavePlayer().catch(error=>{modal(`<h2>No new snapshot was saved</h2><p>${esc(error.message)}</p><p>Wait for the game to finish loading and try again, or return to the library. Your existing snapshots are safe.</p><div class="modal-actions"><button data-close>Keep playing</button><button id="leave-without-save" class="primary">Return to library</button></div>`,()=>{$('#leave-without-save').onclick=()=>{$('#modal').close();leavePlayer(false).catch(report);};});});
 $('#storage-info').onclick=()=>showStorageInfo().catch(report);
-$('#demo').onclick=async()=>{try{const file=await createDemoArchive();await importArchive(file);}catch(e){report(e);}};
+async function exploreDemo(){try{const file=await createDemoArchive();await importArchive(file);}catch(e){report(e);}}
+$('#demo').onclick=exploreDemo;
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')flush().catch(report);});
 document.addEventListener('vault-native-pause',()=>flush().catch(report).finally(()=>window.VaultNative?.storage?.({operation:'backgroundSaveFinished'}).catch(report)));
 window.addEventListener('pagehide',()=>{flush().catch(()=>{});});

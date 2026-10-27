@@ -25,7 +25,9 @@ export function validateRecord(store, record) {
     validateTimestamp(record.createdAt, 'The version');
     requiredString(record, 'contentHash', 'The version');
     requiredString(record, 'entryPath', 'The version');
-    if (!Array.isArray(record.files) || !record.files.length) throw new Error('The version contains no game files.');
+    if (record.removed !== undefined && typeof record.removed !== 'boolean') throw new Error('The version removal flag is invalid.');
+    if (!Array.isArray(record.files) || (!record.files.length && record.removed !== true)) throw new Error('The version contains no game files.');
+    if (record.removed === true && record.files.length) throw new Error('A removed version must not contain game files.');
     const paths = new Set();
     for (const file of record.files) {
       requiredString(file, 'path', 'A game file');
@@ -35,7 +37,7 @@ export function validateRecord(store, record) {
       if (!(file.data instanceof Uint8Array)) throw new Error('A game file has invalid binary data.');
       if (file.mime !== undefined && typeof file.mime !== 'string') throw new Error('A game file has an invalid content type.');
     }
-    if (!paths.has(record.entryPath)) throw new Error('The game entry file is missing.');
+    if (!record.removed && !paths.has(record.entryPath)) throw new Error('The game entry file is missing.');
     const { files, ...metadata } = record;
     assertJSONValue(metadata);
   } else assertJSONValue(record);
@@ -125,7 +127,7 @@ export function validateRelationships(records) {
   const versions = new Map((records.versions ?? []).map(version => [version.id, version]));
   for (const version of versions.values()) if (!games.has(version.gameId)) throw new Error('A version references a missing game.');
   for (const game of games.values()) {
-    if (game.activeVersionId && versions.get(game.activeVersionId)?.gameId !== game.id) throw new Error('A game references a missing or unrelated active version.');
+    if (game.activeVersionId && (versions.get(game.activeVersionId)?.gameId !== game.id || versions.get(game.activeVersionId).removed)) throw new Error('A game references a missing or unrelated active version.');
   }
   for (const save of records.saves ?? []) {
     if (!games.has(save.gameId) || versions.get(save.versionId)?.gameId !== save.gameId) throw new Error('A save references a missing or unrelated game version.');
@@ -154,14 +156,14 @@ export function createVault(transact, storageKind = 'browser') {
           const previous = byId.get(record.id);
           if (store === 'versions' && previous && (previous.gameId !== record.gameId || previous.contentHash !== record.contentHash)) throw new Error('The backup contains a version ID that conflicts with an installed version.');
           if (store === 'saves' && previous && canonical(compactSaveRecord(previous)) !== canonical(compactSaveRecord(record))) throw new Error('The backup contains a save ID that conflicts with an existing save. Export both libraries separately before restoring.');
-          if (!previous) byId.set(record.id, record);
+          if (!previous || (store === 'versions' && previous.removed && !record.removed)) byId.set(record.id, record);
         }
         merged[store] = [...byId.values()];
       }
       validateRelationships(merged);
       for (const store of STORES) {
         const known = new Set(existing[store].map(record => record.id));
-        for (const record of imported[store]) if (!known.has(record.id)) await tx.put(store, record);
+        for (const record of imported[store]) if (!known.has(record.id) || (store === 'versions' && existing[store].find(previous => previous.id === record.id)?.removed && !record.removed)) await tx.put(store, record);
       }
       if (markMigrated) await tx.markMigrated();
       return { games: imported.games.length, versions: imported.versions.length, saves: imported.saves.length };
@@ -194,6 +196,7 @@ export function createVault(transact, storageKind = 'browser') {
     },
     importVersion(game, version) {
       validateRecord('games', game); validateRecord('versions', version);
+      if (version.removed) throw new Error('Import a version with its game files.');
       if (version.gameId !== game.id) throw new Error('The version belongs to a different game.');
       if (game.activeVersionId && game.activeVersionId !== version.id) throw new Error('The imported version must be the active version.');
       return transact(['games', 'versions'], 'readwrite', async tx => {
@@ -280,6 +283,39 @@ export function createVault(transact, storageKind = 'browser') {
         for (const store of ['versions', 'saves']) {
           for (const key of await tx.getAllKeys(store, 'gameId', gameId)) await tx.delete(store, key);
         }
+      });
+    },
+    deleteVersion(gameId, versionId, { allowGameRemoval = false } = {}) {
+      return transact(['games', 'versions', 'saves'], 'readwrite', async tx => {
+        const game = await tx.get('games', gameId), version = await tx.get('versions', versionId);
+        if (!game || !version || version.removed) throw new Error('This version is no longer installed. Refresh the library.');
+        if (version.gameId !== gameId) throw new Error('The version belongs to a different game.');
+        const versions = await tx.getAll('versions', 'gameId', gameId);
+        const remaining = versions.filter(item => item.id !== versionId && !item.removed)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+        if (!remaining.length) {
+          if (!allowGameRemoval) throw new Error('This is now the last version. Refresh the library and confirm removing the game and all its saves.');
+          const saves = await tx.getAllKeys('saves', 'gameId', gameId);
+          for (const item of versions) await tx.delete('versions', item.id);
+          for (const id of saves) await tx.delete('saves', id);
+          await tx.delete('games', gameId);
+          return { gameRemoved: true, deletedSaves: saves.length };
+        }
+        const saved = await tx.getAllKeys('saves', 'versionId', versionId);
+        if (saved.length) {
+          // Keep only source fingerprints needed to verify retained saves.
+          // Package bytes and duplicate indexed chapter source can be released.
+          const scene = info => {
+            if (!plain(info)) return info;
+            const { lines, labels, ...metadata } = info;
+            return { ...metadata, ...(Array.isArray(lines) ? { lineCount: lines.length } : {}) };
+          };
+          const sceneIndex = Array.isArray(version.sceneIndex) ? version.sceneIndex.map(scene)
+            : Object.fromEntries(Object.entries(version.sceneIndex || {}).map(([name, info]) => [name, scene(info)]));
+          await tx.put('versions', { ...version, removed: true, files: [], sceneIndex });
+        } else await tx.delete('versions', versionId);
+        if (!remaining.some(item => item.id === game.activeVersionId)) await tx.put('games', { ...game, activeVersionId: remaining[0].id });
+        return { gameRemoved: false, deletedSaves: 0 };
       });
     },
   };
