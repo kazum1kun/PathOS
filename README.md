@@ -48,9 +48,11 @@ Open a game's **Versions** tab and choose **Remove** to free an imported version
 
 ## Debug choices
 
-While playing, turn on **Debug choices** in the reader toolbar to inspect choice conditions, their true/false results, and the current variables they check. Hidden and disabled options appear with their conditions, including conditional branches and reuse restrictions. **Selection effects** previews direct variable changes, such as `strength: 10 → 15 (+5)`, and shows jumps/calls. It follows predictable branches on copies of the current variables. Preview stops at a jump, call, another interaction, randomness, scripts, or unsupported commands; later effects are explicitly left unknown. Games with generated options or no inspectable body may have no effect preview.
+While playing, turn on **Debug choices** in the reader toolbar to inspect choice conditions, their true/false results, and the current variables they check. Hidden and disabled options appear with their conditions, including conditional branches and reuse restrictions. Options without conditions say **No checks.** **Selection effects** shows variable changes, random ranges, and readable descriptions of jumps/calls. Small integer rolls also show dependent changes and branch probabilities. Larger or continuous rolls stay as ranges; dependent values are labeled as random results.
 
-Use **Choose** for an available option or **Force-select** to bypass a hidden or disabled option's checks. Forcing a choice can put the story in an invalid state; it does not grant the stats or other requirements the condition checks. Previewing does not change the live game state.
+Expand **Script and context** on an option to see its original source, line numbers, surrounding lines, and enclosing choice/conditions. The selected option is highlighted. Parsed effects omit the original commands and line numbers.
+
+Use **Choose** for an available option or **Force-select** to bypass a hidden or disabled option's checks. Forcing selects its body with your current stats. Previewing uses copies of the game variables and does not draw random numbers.
 
 The toggle updates the current choice controls without replaying the page or creating a save. It starts off when PathOS opens and keeps your preference for the current app session. The bundled demo includes hidden and disabled examples. Standard ChoiceScript choice menus are supported; unfamiliar syntax is reported, and conditions that cannot be evaluated show “unknown.”
 

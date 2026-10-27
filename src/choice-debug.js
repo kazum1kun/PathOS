@@ -6,11 +6,11 @@ export function inspectChoiceBlock(scene, startLine, groups, renderedOptions) {
   function index(options) { for (const option of options || []) { existing.set(option.line - 1, option); index(option.suboptions); } }
   index(renderedOptions);
   const copy = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
-  function cloneScene() {
-    const target = Object.assign(Object.create(Object.getPrototypeOf(scene)), scene);
-    const stats = { ...scene.stats }; delete stats.scene;
+  function cloneScene(source = scene) {
+    const target = Object.assign(Object.create(Object.getPrototypeOf(source)), source);
+    const stats = { ...source.stats }; delete stats.scene;
     target.stats = copy(stats); target.stats.scene = target;
-    target.temps = copy(scene.temps || {}); target.debugMode = false;
+    target.temps = copy(source.temps || {}); target.debugMode = false;
     return target;
   }
   const shadow = cloneScene();
@@ -21,9 +21,14 @@ export function inspectChoiceBlock(scene, startLine, groups, renderedOptions) {
     for (const scope of ['temps', 'stats']) if (name !== 'scene' && Object.hasOwn(target[scope], name)) return { name, scope, value: copy(target[scope][name]) };
     return null;
   }
-  function readExpression(target, expression, line) {
+  function readExpression(target, expression, line, unknown = new Set()) {
     const values = new Map(), original = target.getVar, own = Object.hasOwn(target, 'getVar');
-    const record = name => { const value = variable(target, String(name)); if (value && values.size < 16) values.set(value.name, value); };
+    let uncertain = false;
+    const record = name => {
+      name = String(name).toLowerCase();
+      if (unknown.has(name)) { uncertain = true; throw new Error('Random value'); }
+      const value = variable(target, name); if (value && values.size < 16) values.set(value.name, value);
+    };
     // Capture actual engine reads, including indirect references. The lexical
     // fallback supports engines that read directly from stats instead of getVar.
     if (typeof original === 'function') target.getVar = function(name, ...args) { record(name); return original.call(this, name, ...args); };
@@ -32,7 +37,7 @@ export function inspectChoiceBlock(scene, startLine, groups, renderedOptions) {
       target.lineNum = line;
       const value = target.evaluateExpr(target.tokenizeExpr(expression));
       return { known: value !== undefined && (typeof value !== 'number' || Number.isFinite(value)), value, values: [...values.values()] };
-    } catch { return { known: false, values: [...values.values()] }; }
+    } catch { return { known: false, uncertain, values: [...values.values()] }; }
     finally { if (own) target.getVar = original; else delete target.getVar; }
   }
   function condition(kind, expression, line, result) {
@@ -41,64 +46,121 @@ export function inspectChoiceBlock(scene, startLine, groups, renderedOptions) {
   }
   function indent(at) { shadow.lineNum = at; return shadow.getIndent(lines[at]); }
   function blockEnd(at, limit) { let next = at + 1; while (next < limit && (!lines[next].trim() || indent(next) > indent(at))) next++; return next; }
-  let previewBudget = 2000;
+  // Split random arguments at whitespace outside grouped expressions/strings.
+  function argumentsOf(text) {
+    const result = []; let part = '', depth = 0, quoted = false, escaped = false;
+    for (const char of text) {
+      if (/\s/.test(char) && !quoted && !depth) { if (part) result.push(part); part = ''; continue; }
+      part += char;
+      if (escaped) { escaped = false; continue; }
+      if (char === '\\' && quoted) { escaped = true; continue; }
+      if (char === '"') quoted = !quoted;
+      if (!quoted) { if ('({['.includes(char)) depth++; if (')}]'.includes(char)) depth--; }
+    }
+    if (part) result.push(part);
+    return depth || quoted ? [] : result;
+  }
+  let previewBudget = 6000;
   function previewEffects(from, to) {
-    const effects = [], effectNotes = [];
-    if (from >= to) return { effects, effectNotes: ['Effect preview unavailable: this option has no inspectable body.'] };
-    if (previewBudget <= 0) return { effects, effectNotes: ['Effect preview limit reached.'] };
-    const target = cloneScene(); let steps = 0;
-    function stop(message) { effectNotes.push(message); return false; }
-    function walk(first, last, depth = 0) {
-      if (depth > 12) return stop('Preview stopped at deeply nested code. Later effects are unknown.');
-      let branch = null;
+    const records = new Map(), effectNotes = new Set(); let steps = 0, worlds = 1;
+    if (from >= to) return { effects: [], effectNotes: ['Effects unavailable.'] };
+    function emit(state, at, effect) {
+      let record = records.get(at);
+      if (!record) { record = { ...effect, line: at + 1, chance: 0, beforeValues: [], afterValues: [], ranges: [] }; records.set(at, record); }
+      record.chance += state.weight;
+      for (const [key, value] of [['beforeValues', effect.before], ['afterValues', effect.after]]) {
+        if (!record[key].some(item => JSON.stringify(item) === JSON.stringify(value))) record[key].push(value);
+      }
+      if (effect.range && !record.ranges.some(item => JSON.stringify(item) === JSON.stringify(effect.range))) record.ranges.push(effect.range);
+      if (effect.afterUnknown) record.afterUnknown = true;
+      if (effect.beforeUnknown) record.beforeUnknown = true;
+    }
+    function unavailable(state, at, description = 'Unparsed effect.') { emit(state, at, { kind: 'unknown', description }); }
+    function walk(first, last, states, depth = 0) {
+      if (depth > 12) { effectNotes.add('More effects.'); return []; }
       for (let at = first; at < last;) {
-        if (++steps > 200 || --previewBudget < 0 || effects.length >= 40) return stop('Effect preview limit reached. Later effects are unknown.');
+        if (!states.length) return [];
+        if (++steps > 200 || (previewBudget -= states.length) < 0 || records.size >= 40) { effectNotes.add('More effects.'); return []; }
         const text = lines[at].trim(), command = /^\*([a-z_]+)\b\s*(.*)$/i.exec(text);
         if (!text || /^\*comment\b/i.test(text)) { at++; continue; }
-        if (command && /^(if|elseif|elsif|else)$/i.test(command[1])) {
-          const kind = command[1].toLowerCase(), end = blockEnd(at, last);
-          if (kind === 'if') branch = false;
-          else if (branch === null) return stop(`Unmatched *${kind} at line ${at + 1}; later effects are unknown.`);
-          if (!branch) {
-            const read = kind === 'else' ? { known: true, value: true } : readExpression(target, command[2], at);
-            if (!read.known || typeof read.value !== 'boolean') return stop(`Cannot resolve *${kind} ${command[2]} at line ${at + 1}; later effects depend on this check.`);
-            if (read.value) { branch = true; if (!walk(at + 1, end, depth + 1)) return false; }
+        if (command && command[1].toLowerCase() === 'if') {
+          let pending = states, resumed = [], branchAt = at, branchCommand = command;
+          for (;;) {
+            const end = blockEnd(branchAt, last), yes = [], no = [];
+            for (const state of pending) {
+              const read = branchCommand[1].toLowerCase() === 'else' ? { known: true, value: true } : readExpression(state.target, branchCommand[2], branchAt, state.unknown);
+              if (!read.known || typeof read.value !== 'boolean') unavailable(state, branchAt, 'Conditional effects.');
+              else (read.value ? yes : no).push(state);
+            }
+            resumed.push(...walk(branchAt + 1, end, yes, depth + 1)); pending = no;
+            let next = end;
+            while (next < last && (!lines[next].trim() || /^\s*\*comment\b/i.test(lines[next]))) next++;
+            const nextCommand = next < last && /^\s*\*(elseif|elsif|else)\b\s*(.*)$/i.exec(lines[next]);
+            if (!nextCommand) { at = end; break; }
+            branchAt = next; branchCommand = nextCommand;
           }
-          at = end; continue;
+          states = [...resumed, ...pending]; continue;
         }
-        branch = null;
         if (!command) { at++; continue; }
         const kind = command[1].toLowerCase(), data = command[2];
         if (kind === 'set' || kind === 'temp') {
-          const assignment = /^([a-z][a-z_0-9]*)(?:\s+(.+))?$/i.exec(data);
-          if (!assignment || /^(constructor|prototype|__proto__)$/i.test(assignment[1])) return stop(`Dynamic or unsupported *${kind} at line ${at + 1}; later effects are unknown.`);
-          const name = assignment[1].toLowerCase(), current = variable(target, name);
-          if (kind === 'set' && (!current || !assignment[2])) return stop(`Cannot resolve *set ${data} at line ${at + 1}; later effects are unknown.`);
-          const scope = kind === 'temp' ? 'temps' : current.scope;
-          let expression = assignment[2] || '', read;
-          if (kind === 'set' && /^(?:%[+-]|[+\-*/&])/.test(expression)) expression = name + ' ' + expression;
-          read = !expression && kind === 'temp' ? { known: true, value: null } : readExpression(target, expression, at);
-          if (!read.known || !['string', 'number', 'boolean'].includes(typeof read.value) && read.value !== null) return stop(`Cannot resolve *${kind} ${data} at line ${at + 1}; later effects are unknown.`);
-          const before = Object.hasOwn(target[scope], name) ? copy(target[scope][name]) : undefined;
-          target[scope][name] = read.value;
-          effects.push({ kind, name, scope, before, after: read.value, source: text, line: at + 1 });
+          const assignment = /^([a-z][a-z_0-9]*)(?:\s+|(?=[+\-*/%&]))?(.*)$/i.exec(data);
+          states = states.filter(state => {
+            if (!assignment || /^(constructor|prototype|__proto__)$/i.test(assignment[1])) { unavailable(state, at); return false; }
+            const { target, unknown } = state, name = assignment[1].toLowerCase(), current = variable(target, name);
+            if (kind === 'set' && (!current || !assignment[2])) { unavailable(state, at); return false; }
+            const scope = kind === 'temp' ? 'temps' : current.scope;
+            let expression = assignment[2] || '';
+            if (kind === 'set' && /^(?:%[+-]|[+\-*/&])/.test(expression)) expression = name + ' ' + expression;
+            const read = !expression && kind === 'temp' ? { known: true, value: null } : readExpression(target, expression, at, unknown);
+            if (!read.uncertain && (!read.known || !['string', 'number', 'boolean'].includes(typeof read.value) && read.value !== null)) { unavailable(state, at); return false; }
+            const before = Object.hasOwn(target[scope], name) ? copy(target[scope][name]) : undefined;
+            emit(state, at, { kind, name, scope, before, after: read.value, afterUnknown: !!read.uncertain, beforeUnknown: unknown.has(name) });
+            if (read.uncertain) unknown.add(name); else { target[scope][name] = read.value; unknown.delete(name); }
+            return true;
+          });
+        } else if (kind === 'rand') {
+          const args = argumentsOf(data), rolls = [];
+          for (const state of states) {
+            const name = args[0]?.toLowerCase(), current = name && variable(state.target, name);
+            const low = args.length === 3 && readExpression(state.target, args[1], at, state.unknown), high = args.length === 3 && readExpression(state.target, args[2], at, state.unknown);
+            const min = Number(low?.value), max = Number(high?.value);
+            if (!current || !low.known || !high.known || !Number.isFinite(min) || !Number.isFinite(max) || min > max) { unavailable(state, at, 'Random effect.'); continue; }
+            // Decimal literals keep their continuous semantics, even if a game
+            // evaluator converts their textual representation into a number.
+            const integer = [low.value, high.value].every(value => String(parseInt(value, 10)) === String(value)) && ![args[1], args[2]].some(value => /^-?\d+\.\d+$/.test(value));
+            const range = { min, max, integer, upperExclusive: !integer && min !== max };
+            emit(state, at, { kind: 'rand', name, scope: current.scope, before: current.value, beforeUnknown: state.unknown.has(name), range });
+            rolls.push({ state, name, scope: current.scope, min, max, count: min === max ? 1 : integer ? max - min + 1 : Infinity });
+          }
+          const extraWorlds = rolls.reduce((sum, roll) => sum + roll.count - 1, 0), expand = worlds + extraWorlds <= 128;
+          if (expand) worlds += extraWorlds;
+          states = rolls.flatMap(({ state, name, scope, min, count }) => {
+            if (!expand) { state.unknown.add(name); return [state]; }
+            return Array.from({ length: count }, (_, index) => {
+              const target = cloneScene(state.target), unknown = new Set(state.unknown); unknown.delete(name);
+              target[scope][name] = min + index;
+              return { target, unknown, weight: state.weight / count };
+            });
+          });
         } else if (kind === 'achieve') {
-          effects.push({ kind, source: text, line: at + 1 });
+          for (const state of states) emit(state, at, { kind, description: `Unlock achievement: ${scene.nav?.achievements?.[data.toLowerCase()]?.title || data}` });
         } else if (/^(goto|goto_scene|gosub|gosub_scene|return|finish|ending|abort|bug|restart|page_break|choice|fake_choice|input_text|input_number|redirect|delay_break|advertisement|restore_game|restore_password)$/i.test(kind)) {
-          effects.push({ kind: 'flow', source: text, line: at + 1 });
-          return stop('Preview stops here; effects after this jump, call, or interaction are not followed.');
-        } else if (kind === 'rand' || kind === 'script') {
-          return stop(`${text} (line ${at + 1}): ${kind === 'rand' ? 'random outcome' : 'scripted effects'} not predicted. Later effects are unknown.`);
+          for (const state of states) emit(state, at, { kind: 'flow', command: kind, destination: argumentsOf(data).slice(0, /^(goto_scene|gosub_scene)$/.test(kind) ? 2 : 1).join(' ') });
+          return [];
         } else if (/^(print|line_break|image|sound|link|link_button|label|stat_chart|text_image|youtube)$/i.test(kind)) {
           // Display commands do not need to run to preview variable changes.
           if (kind === 'stat_chart') { at = blockEnd(at, last); continue; }
-        } else return stop(`*${kind} at line ${at + 1} is not previewed. Later effects are unknown.`);
+        } else { for (const state of states) unavailable(state, at, kind === 'script' ? 'Scripted effect.' : 'Unparsed effect.'); return []; }
         at++;
       }
-      return true;
+      return states;
     }
-    walk(from, to);
-    return { effects, effectNotes };
+    walk(from, to, [{ target: cloneScene(), unknown: new Set(), weight: 1 }]);
+    const effects = [...records.values()].sort((a, b) => a.line - b.line);
+    for (const effect of effects) effect.chance = Math.abs(effect.chance - 1) < 1e-9 ? 1 : Math.min(1, effect.chance);
+    if (effectNotes.size || effects.some(effect => effect.kind === 'unknown')) for (const effect of effects) if (effect.chance < 1) effect.chance = undefined;
+    return { effects, effectNotes: [...effectNotes] };
   }
   // Parentheses inside quoted strings do not close an inline condition.
   function parenthetical(text) {
@@ -118,7 +180,7 @@ export function inspectChoiceBlock(scene, startLine, groups, renderedOptions) {
   let limit = startLine + 1;
   while (limit < lines.length && (!lines[limit].trim() || indent(limit) > startIndent)) limit++;
   let last = limit - 1; while (last > startLine && !lines[last].trim()) last--;
-  function parse(from, to, inherited, groupIndex) {
+  function parse(from, to, inherited, groupIndex, context = []) {
     const options = []; let branches = [];
     for (let at = from; at < to;) {
       if (!lines[at].trim() || /^\s*\*comment\b/i.test(lines[at])) { at++; continue; }
@@ -139,19 +201,19 @@ export function inspectChoiceBlock(scene, startLine, groups, renderedOptions) {
         } else if (kind !== 'selectable_if') {
           const previous = [...branches];
           if (kind === 'if') branches = [];
-          else if (!previous.length) notes.add('A conditional branch could not be matched to its preceding *if.');
+          else if (!previous.length) notes.add('Unmatched conditional branch.');
           if (kind !== 'if') {
             const result = previous.some(item => item.result === true) ? false : previous.every(item => item.result === false) ? true : null;
             conditions.push({ ...condition('earlier branches', previous.map(item => `not (${item.expression})`).join(' and ') || 'unknown', at, result), values: [...new Map(previous.flatMap(item => item.values).map(value => [value.name, value])).values()] });
           }
           if (kind !== 'else') { const test = condition(kind, data, at); conditions.push(test); branches.push(test); }
           boundaries.add(at);
-          options.push(...parse(at + 1, end, conditions, groupIndex)); at = end; continue;
+          options.push(...parse(at + 1, end, conditions, groupIndex, [...context, ...previous.map(item => item.line - 1), at])); at = end; continue;
         }
       } else branches = [];
       if (/^\*print\s+/i.test(text)) {
         try { shadow.lineNum = at; text = String(shadow.evaluateExpr(shadow.tokenizeExpr(text.replace(/^\*print\s+/i, '')))); }
-        catch { notes.add('A generated option could not be inspected.'); }
+        catch { notes.add('Generated option.'); }
       }
       if (/^#\s*\S/.test(text)) {
         boundaries.add(at);
@@ -162,11 +224,11 @@ export function inspectChoiceBlock(scene, startLine, groups, renderedOptions) {
         const option = original || { name, group: groups[groupIndex] || 'choice', line: at + 1, endLine: end, ...(reuse !== 'allow' ? { reuse } : {}) };
         const hidden = !original || conditions.some(item => item.result === false && item.kind !== 'selectable_if' && item.kind !== 'disable_reuse');
         const disabled = !!original?.unselectable || conditions.some(item => item.result === false && (item.kind === 'selectable_if' || item.kind === 'disable_reuse'));
-        const entry = { option, name: original?.name || name, conditions, availability: hidden ? 'hidden' : disabled ? 'disabled' : 'available' };
-        if (groupIndex + 1 < groups.length) entry.children = parse(at + 1, end, conditions, groupIndex + 1);
+        const entry = { option, name: original?.name || name, conditions, availability: hidden ? 'hidden' : disabled ? 'disabled' : 'available', source: { from: at, to: end, context: [startLine, ...context] } };
+        if (groupIndex + 1 < groups.length) entry.children = parse(at + 1, end, conditions, groupIndex + 1, [...context, at]);
         else Object.assign(entry, previewEffects(at + 1, end));
         options.push(entry);
-      } else if (!/^\*comment\b/i.test(text)) notes.add('Some option syntax could not be inspected; the original choices remain available when debug mode is off.');
+      } else if (!/^\*comment\b/i.test(text)) notes.add('Some choices use generated syntax.');
       at = end;
     }
     return options;
@@ -176,7 +238,7 @@ export function inspectChoiceBlock(scene, startLine, groups, renderedOptions) {
   collect(options);
   for (const [line, option] of existing) if (!inspected.has(line) && !option.suboptions?.length) {
     const conditions = [...(option.displayIf || []).map(expression => condition('if', expression, line)), ...(option.selectableIf ? [condition('selectable_if', option.selectableIf, line)] : [])];
-    options.push({ option, name: option.name, conditions, availability: option.unselectable ? 'disabled' : 'available', effects: [], effectNotes: ['Effect preview unavailable for this generated option.'] });
+    options.push({ option, name: option.name, conditions, availability: option.unselectable ? 'disabled' : 'available', effects: [], effectNotes: ['Effects unavailable.'], source: { from: line, to: option.endLine || line + 1, context: [startLine] } });
   }
   return { options, boundaries: [...boundaries], choiceEnd: last, notes: [...notes] };
 }

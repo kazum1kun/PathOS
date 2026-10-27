@@ -520,14 +520,14 @@ test('debug mode reveals conditions and force-selects a hidden option through th
   assert.equal(saved.transition,'choice');assert.equal(saved.state.lineNum,2);
 });
 
-test('choice debugger renders selection changes and incomplete previews as literal text without executing them', () => {
+test('choice debugger keeps effects concise and exposes original script and context on demand', () => {
   const { document } = parseHTML('<main id="main"></main>'), env = sandbox({ debugMode: true }, document);
-  const source = [...debugChoiceSource];
-  source[2] = '    *set strength + 5';
-  source[4] = '    *set label "<img src=x onerror=alert(1)>"';
-  source[6] = '    *gosub reward';
+  const lines = [...debugChoiceSource];
+  lines[2] = '    *set strength + 5';
+  lines[4] = '    *set label "<img src=x onerror=alert(1)>"';
+  lines[6] = '    *gosub reward';
   env.run(debugChoiceEngine
-    .replace(JSON.stringify(debugChoiceSource), JSON.stringify(source))
+    .replace(JSON.stringify(debugChoiceSource), JSON.stringify(lines))
     .replace('strong:false,ready:false', 'strong:false,ready:false,strength:10,label:"before"')
     .replace('return this.stats[value];', 'if(value==="strength + 5")return this.stats.strength+5;if(value.startsWith(\'"\'))return JSON.parse(value);return this.stats[value];'));
   env.flush();
@@ -536,12 +536,48 @@ test('choice debugger renders selection changes and incomplete previews as liter
   assert.match(panel.textContent, /Selection effects/);
   assert.match(panel.textContent, /stats.strength: 10 → 15 \(\+5\)/);
   assert.match(panel.textContent, /stats.label: "before" → "<img src=x onerror=alert\(1\)>"/);
-  assert.match(panel.textContent, /\*gosub reward/);
-  assert.match(panel.textContent, /effects after this jump, call, or interaction are not followed/);
+  assert.match(panel.textContent, /Call: reward/);
+  assert.match(panel.textContent, /No checks\./);
+  assert.doesNotMatch(panel.textContent, /Preview stops|not predicted|invalid game state|eligibility checks/);
+  const effects = [...panel.querySelectorAll('.pathos-choice-effects')].map(node => node.textContent).join('\n');
+  assert.doesNotMatch(effects, /\*set|\*gosub|line \d+/);
+  const source = panel.querySelector('.pathos-choice-source');
+  assert.equal(source.hasAttribute('open'), false);
+  assert.equal(source.querySelector('pre'), null, 'source is loaded when expanded');
+  source.open = true; source.dispatchEvent(new document.defaultView.Event('toggle'));
+  assert.match(source.querySelector('pre').textContent, /1 │ \*fake_choice/);
+  assert.match(source.querySelector('pre').textContent, /\*if \(strong\) #Hidden path/);
+  assert.match(source.querySelector('pre').textContent, /\*set strength \+ 5/);
+  assert.equal(source.querySelectorAll('.source-option').length, 2, 'the selected header and body stand out from their context');
+  const guardedSource = panel.querySelectorAll('.pathos-choice-source')[1];
+  guardedSource.open = true; guardedSource.dispatchEvent(new document.defaultView.Event('toggle'));
+  assert.match(guardedSource.querySelector('pre').textContent, /<img src=x onerror=alert\(1\)>/);
+  source.open = false; source.dispatchEvent(new document.defaultView.Event('toggle'));
+  source.open = true; source.dispatchEvent(new document.defaultView.Event('toggle'));
+  assert.equal(source.querySelectorAll('pre').length, 1);
   assert.equal(panel.querySelector('img'), null);
   assert.equal(env.context.stats.strength, 10);
   assert.equal(env.context.stats.label, 'before');
   assert.equal(env.context.stats.scene.lineNum, 0);
+});
+
+test('choice debugger presents random ranges and dependent branch probabilities without source clutter', () => {
+  const { document } = parseHTML('<main id="main"></main>'), env = sandbox({ debugMode: true }, document);
+  const source = ['*fake_choice', '  #Roll', '    *rand roll 1 6', '    *if roll <= 2', '      *set strength + 5', '    *else', '      *set strength - 3', '  #Read', '    A quiet moment.'];
+  env.run(debugChoiceEngine
+    .replace(JSON.stringify(debugChoiceSource), JSON.stringify(source))
+    .replace('strong:false,ready:false', 'strong:false,ready:false,strength:10,roll:0')
+    .replace("[{name:'Guarded path',line:4,unselectable:true},{name:'Open path',line:6}]", "[{name:'Roll',line:2},{name:'Read',line:8}]")
+    .replace('return this.stats[value];', 'if(/^\\d+$/.test(value))return Number(value);if(value==="roll <= 2")return this.stats.roll<=2;if(value==="strength + 5")return this.stats.strength+5;if(value==="strength - 3")return this.stats.strength-3;return this.stats[value];'));
+  env.flush();
+  const panel = document.querySelector('.pathos-choice-debug'), effects = panel.querySelector('.pathos-choice-effects');
+  assert.match(effects.textContent, /stats.roll: 0 → 1–6 \(random integer\)/);
+  assert.match(effects.textContent, /33\.33% chance · stats.strength: 10 → 15 \(\+5\)/);
+  assert.match(effects.textContent, /66\.67% chance · stats.strength: 10 → 7 \(-3\)/);
+  assert.doesNotMatch(effects.textContent, /\*rand|\*set|line \d+/);
+  assert.match(panel.querySelectorAll('.pathos-choice-effects')[1].textContent, /^No effects\.$/);
+  assert.equal(env.context.stats.roll, 0);
+  assert.equal(env.context.stats.strength, 10);
 });
 
 test('debug mode force-selects disabled choices and handles a menu with no selectable options', () => {

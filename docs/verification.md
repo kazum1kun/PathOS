@@ -72,6 +72,12 @@ The debugger reports current checked values and previews direct `*set`/`*temp` c
 
 Browser smoke checks used local fixtures with the real app importer and shared isolated runtime, synthetic file-drag events, and a small test engine. Dropping the demo opened its import review; cancel retained the empty library. The dark debugger displayed check values and direct changes at desktop and 390px phone widths without horizontal overflow. This pass did not include an OS file-manager drag, a commercial APK, or native iOS device testing. The full suite passes 145 tests; three optional private-APK checks are skipped without their fixtures.
 
+### Choice debug refinements
+
+The debugger now says **No checks.** for unconditional options, presents parsed effects without source commands/line numbers, and uses readable jump/call descriptions. Per-option **Script and context** disclosures load the original source on expansion, include surrounding lines and enclosing conditions, and highlight the selected header/body. Script text renders literally, preserving indentation in a monospace view.
+
+`*rand` previews show integer or continuous ranges. Up to 128 simultaneous integer outcomes are traced through assignments and conditional branches, preserving correlations and reporting probabilities. Continuous or larger ranges remain symbolic, while unrelated assignments still parse. Inspection retains its command/scene budgets and does not consume RNG values. Tests cover independent and copied rolls, grouped bounds, invalid arguments, range limits, safe source rendering, and opening/closing the disclosure without altering progress. Browser checks verified the dark desktop and 390px layouts, source expansion/collapse, and no horizontal overflow. All 150 tests pass, with three optional private-APK checks skipped; syntax checks and the web build pass.
+
 Syntax checks, the final web build, native asset sync, and native metadata/export/storage bridge verification pass on Windows. The shared runtime and choice inspector are bundled into the iOS project; Swift compilation and device checks require macOS/Xcode.
 
 ## Autosave history (2026-10-17)

@@ -411,10 +411,9 @@ export function runtimeBootstrap(config, inspectChoices) {
     // Scoped styles work with the game's font size and color scheme.
     const style = document.createElement('style');
     style.textContent = '.pathos-choice-debug{border:1px solid currentColor;border-radius:6px;padding:16px;margin:16px 0;font:inherit;line-height:1.5}.pathos-choice-debug h2{font:inherit;font-weight:bold;margin:0 0 6px}.pathos-choice-debug h3{font:inherit;font-size:.85em;font-weight:bold;margin:12px 0 4px}.pathos-choice-debug p{margin:6px 0 12px}.pathos-choice-debug ul{list-style:none;padding:0;margin:0}.pathos-choice-debug li{border-top:1px solid currentColor;padding:12px 0}.pathos-choice-debug small{display:block;font:inherit;font-size:.85em;opacity:.85}.pathos-choice-debug code{display:block;white-space:pre-wrap;overflow-wrap:anywhere;font-size:.85em}.pathos-choice-debug button{display:block;width:auto;max-width:100%;padding:10px 14px;margin:10px 0 0;border:1px solid currentColor;border-radius:4px;background:transparent;color:inherit;font:inherit;line-height:1.4;cursor:pointer}.pathos-choice-debug button:disabled{opacity:.5}.pathos-choice-debug [data-availability="hidden"],.pathos-choice-debug [data-availability="disabled"]{border-left:3px solid currentColor;padding-left:12px}';
+    style.textContent += '.pathos-choice-source{margin:12px 0;font-size:.85em}.pathos-choice-source summary{cursor:pointer}.pathos-choice-source pre{max-height:320px;overflow:auto;border:1px solid currentColor;border-radius:4px;padding:8px;font:.9em/1.5 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;tab-size:2}.pathos-choice-source .source-line{display:block;opacity:.65;white-space:pre-wrap;font-family:inherit!important;line-height:inherit!important}.pathos-choice-source .source-option{opacity:1;border-left:2px solid currentColor;padding-left:6px}.pathos-choice-source .source-header{font-weight:bold}';
     panel.appendChild(style);
     const heading = document.createElement('h2'); heading.textContent = 'Debug choices'; panel.appendChild(heading);
-    const note = document.createElement('p'); note.textContent = 'Force-select bypasses choice conditions and may lead to invalid game state.'; panel.appendChild(note);
-    const previewNote = document.createElement('small'); previewNote.textContent = 'Effects preview uses current values without changing the game. It covers the option body until a jump or interaction; later, random, and scripted effects are not predicted.'; panel.appendChild(previewNote);
     const list = document.createElement('ul'); panel.appendChild(list);
     function valueText(value) {
       if (value === undefined) return 'unset';
@@ -422,6 +421,44 @@ export function runtimeBootstrap(config, inspectChoices) {
       return text.length > 160 ? text.slice(0, 157) + '…' : text;
     }
     function detail(row, tag, text) { const node = document.createElement(tag); node.textContent = text; row.appendChild(node); }
+    function alternatives(values) {
+      if (values.length === 1) return valueText(values[0]);
+      if (values.length > 3 && values.every(value => typeof value === 'number')) {
+        const sorted = [...values].sort((a, b) => a - b), contiguous = sorted.every((value, index) => Number.isInteger(value) && (!index || value === sorted[index - 1] + 1));
+        return `${sorted[0]}–${sorted.at(-1)}${contiguous ? '' : ` (${values.length} outcomes)`}`;
+      }
+      return values.slice(0, 6).map(valueText).join(' or ') + (values.length > 6 ? ' …' : '');
+    }
+    function flowText(effect) {
+      const destination = effect.destination;
+      return ({ goto: `Go to passage: ${destination}`, goto_scene: `Go to chapter: ${destination}`, gosub: `Call: ${destination}`, gosub_scene: `Call chapter: ${destination}`, return: 'Return from the call.', finish: 'Continue to the next chapter.', ending: 'End the story.', abort: 'Stop the scene.', bug: 'Report a story error.', restart: 'Restart the story.', page_break: 'Continue to the next page.', choice: 'Show another choice.', fake_choice: 'Show another choice.', input_text: `Enter text: ${destination}`, input_number: `Enter a number: ${destination}`, redirect: `Open: ${destination}`, delay_break: 'Continue after a delay.', advertisement: 'Show an advertisement.', restore_game: 'Restore saved progress.', restore_password: 'Restore saved progress.' })[effect.command] || 'Continue.';
+    }
+    function sourcePreview(row, entry, names) {
+      const source = document.createElement('details'); source.className = 'pathos-choice-source';
+      const summary = document.createElement('summary'); summary.textContent = 'Script and context';
+      summary.setAttribute('aria-label', 'Script and context for ' + names.join(' / ')); source.appendChild(summary);
+      let loaded = false;
+      source.addEventListener('toggle', () => {
+        if (!source.open || loaded) return;
+        loaded = true;
+        const lines = menu.scene.lines || [], selected = entry.source || { from: entry.option.line - 1, to: entry.option.line };
+        detail(source, 'small', menu.scene.name || 'Current scene');
+        const pre = document.createElement('pre'); pre.setAttribute('aria-label', 'Original script for ' + names.join(' / ')); source.appendChild(pre);
+        const ranges = [[selected.from - 3, selected.to + 3], ...(selected.context || []).map(line => [line - 1, line + 2])];
+        const indexes = new Set();
+        for (const [from, to] of ranges) for (let line = Math.max(0, from); line < Math.min(lines.length, to); line++) indexes.add(line);
+        let previous = -1;
+        for (const line of [...indexes].sort((a, b) => a - b)) {
+          if (previous >= 0 && line > previous + 1) detail(pre, 'span', '     …');
+          const span = document.createElement('span'); span.className = 'source-line';
+          if (line >= selected.from && line < selected.to) span.classList.add('source-option');
+          if (line === selected.from) span.classList.add('source-header');
+          span.textContent = `${String(line + 1).padStart(String(lines.length).length)} │ ${lines[line]}`; pre.appendChild(span); previous = line;
+        }
+        if (!indexes.size) pre.textContent = 'No source available.';
+      });
+      row.appendChild(source);
+    }
     function render(entries, path = []) {
       for (const entry of entries) {
         const names = [...path, entry.name];
@@ -429,10 +466,10 @@ export function runtimeBootstrap(config, inspectChoices) {
         const row = document.createElement('li'); row.dataset.availability = entry.availability;
         const title = document.createElement('strong'); title.textContent = names.join(' / '); row.appendChild(title);
         const availability = document.createElement('small');
-        availability.textContent = `${entry.availability === 'hidden' ? 'Hidden' : entry.availability === 'disabled' ? 'Disabled' : 'Available'} · line ${entry.option.line}`;
+        availability.textContent = entry.availability === 'hidden' ? 'Hidden' : entry.availability === 'disabled' ? 'Disabled' : 'Available';
         row.appendChild(availability);
         detail(row, 'h3', 'Checks');
-        if (!entry.conditions.length) detail(row, 'small', 'No additional eligibility checks.');
+        if (!entry.conditions.length) detail(row, 'small', 'No checks.');
         for (const condition of entry.conditions) {
           const code = document.createElement('code');
           code.textContent = `${condition.kind === 'earlier branches' ? 'Earlier branches: ' : '*' + condition.kind + ' '}${condition.expression} → ${condition.result === null ? 'unknown' : condition.result}`;
@@ -440,16 +477,27 @@ export function runtimeBootstrap(config, inspectChoices) {
           if (condition.values?.length) detail(row, 'small', condition.values.map(item => `${item.scope}.${item.name} = ${valueText(item.value)}`).join('; '));
         }
         detail(row, 'h3', 'Selection effects');
+        const effects = document.createElement('div'); effects.className = 'pathos-choice-effects'; row.appendChild(effects);
         for (const effect of entry.effects || []) {
+          let text;
           if (effect.kind === 'set' || effect.kind === 'temp') {
-            const delta = typeof effect.before === 'number' && typeof effect.after === 'number' ? effect.after - effect.before : null;
+            const before = effect.beforeUnknown ? 'random value' : alternatives(effect.beforeValues), after = effect.afterUnknown ? 'random result' : alternatives(effect.afterValues);
+            const delta = !effect.beforeUnknown && !effect.afterUnknown && effect.beforeValues.length === 1 && effect.afterValues.length === 1 && typeof effect.before === 'number' && typeof effect.after === 'number' ? effect.after - effect.before : null;
             const change = delta === null || delta === 0 ? '' : ` (${delta > 0 ? '+' : ''}${Number(delta.toPrecision(8))})`;
-            detail(row, 'code', `${effect.scope}.${effect.name}: ${valueText(effect.before)} → ${valueText(effect.after)}${change}`);
-            detail(row, 'small', `${effect.source} · line ${effect.line}`);
-          } else detail(row, 'code', `${effect.source} · line ${effect.line}`);
+            text = `${effect.scope}.${effect.name}: ${before} → ${after}${change}`;
+          } else if (effect.kind === 'rand') {
+            const ranges = effect.ranges.map(range => range.min === range.max ? String(range.min) : range.integer ? `${range.min}–${range.max}` : `[${range.min}, ${range.max})`);
+            text = `${effect.scope}.${effect.name}: ${effect.beforeUnknown ? 'random value' : alternatives(effect.beforeValues)} → ${ranges.slice(0, 6).join(' or ')}${ranges.length > 6 ? ' …' : ''} (random${effect.ranges.every(range => range.integer) ? ' integer' : ' decimal'})`;
+          } else text = effect.kind === 'flow' ? flowText(effect) : effect.description;
+          if (effect.chance < 1) {
+            const percent = effect.chance * 100;
+            text = `${percent < .01 ? '<0.01' : percent > 99.99 ? '>99.99' : Number(percent.toFixed(2))}% chance · ${text}`;
+          }
+          detail(effects, 'code', text);
         }
-        if (!entry.effects?.length && !entry.effectNotes?.length) detail(row, 'small', 'No direct variable changes in this option body.');
-        for (const text of entry.effectNotes || []) detail(row, 'small', text);
+        if (!entry.effects?.length && !entry.effectNotes?.length) detail(effects, 'small', 'No effects.');
+        for (const text of entry.effectNotes || []) detail(effects, 'small', text);
+        sourcePreview(row, entry, names);
         const choose = document.createElement('button'), forced = entry.availability !== 'available';
         choose.type = 'button'; choose.textContent = forced ? 'Force-select' : 'Choose';
         choose.setAttribute('aria-label', `${forced ? 'Force-select' : 'Choose'} ${names.join(' / ')}`);
