@@ -15,7 +15,7 @@
 <section id="player" class="player" hidden aria-label="Game reader"><header class="player-toolbar"><button id="leave-player" class="quiet">← Library</button><div class="now-playing"><strong id="playing-title"></strong><span id="playing-version"></span></div><button id="reader-menu-toggle" class="menu-toggle" aria-expanded="false" aria-controls="reader-actions"><span aria-hidden="true">☰</span> Tools</button><div id="reader-actions" class="reader-actions" role="group" aria-label="Reader tools"><span id="save-status" role="status">Opening…</span><button id="debug-choices" class="quiet" aria-pressed="false" disabled>Debug choices</button><button id="save-now" class="secondary">Save snapshot</button></div></header><div id="runtime-status" role="status" hidden></div><div id="runtime"></div></section>
 <dialog id="modal"><div id="modal-body"></div></dialog>
 <!-- Leave the archive picker unfiltered: iOS can disable APKs it cannot map to a file type. The importer validates the archive contents. -->
-<input type="file" id="archive-file" hidden><input type="file" id="backup-file" accept=".json,application/json" hidden><input type="file" id="save-file" accept=".json,application/json" hidden>
+<input type="file" id="archive-file" hidden><input type="file" id="backup-file" accept=".zip,application/zip" hidden><input type="file" id="save-file" accept=".zip,application/zip,.json,application/json" hidden>
 <script type="module" src="./src/app.js"></script>
 <noscript><p>This app needs JavaScript to import games and keep saves.</p></noscript>
 </body></html>

@@ -1,4 +1,5 @@
-import { assertJSONValue, validateSaveRecord, validateTimestamp } from './compatibility.js';
+import { assertJSONValue, validateSaveRecord, validateTimestamp, compactSaveRecord } from './compatibility.js';
+import { writeArchive, readArchive, hashBytes } from './transfer.js';
 
 // Pre-PathOS identifiers. Renaming them would orphan existing libraries and reject earlier backups.
 export const DATABASE_NAME = 'story-vault';
@@ -6,7 +7,6 @@ export const DATABASE_VERSION = 1;
 export const BACKUP_FORMAT = 'story-vault-backup';
 export const MAX_AUTOSAVES_PER_VERSION = 20;
 const STORES = ['games', 'versions', 'saves', 'profiles'];
-const MAX_BACKUP_BYTES = 512 * 1024 * 1024;
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 function requiredString(record, field, label) {
@@ -54,43 +54,62 @@ export function base64ToBytes(base64) {
   return Uint8Array.from(binary, char => char.charCodeAt(0));
 }
 
-export function encodeBackup(records) {
-  for (const store of STORES) for (const record of records[store] ?? []) validateRecord(store, record);
+export async function encodeBackup(records) {
+  validateLibrary(records);
+  const files = new Map(), versions = [];
+  for (const version of records.versions) {
+    const entries = [];
+    for (const file of version.files) {
+      const { data, ...metadata } = file;
+      const asset = 'assets/' + await hashBytes(data);
+      if (!files.has(asset)) files.set(asset, data);
+      entries.push({ ...metadata, asset });
+    }
+    versions.push({ ...version, files: entries });
+  }
   const backup = {
-    format: BACKUP_FORMAT, version: 1, exportedAt: new Date().toISOString(),
-    games: records.games ?? [],
-    versions: (records.versions ?? []).map(version => ({ ...version, files: version.files.map(file => ({ ...file, data: bytesToBase64(file.data), encoding: 'base64' })) })),
-    saves: records.saves ?? [], profiles: records.profiles ?? [],
+    format: BACKUP_FORMAT, version: 2, exportedAt: new Date().toISOString(),
+    games: records.games, versions,
+    saves: records.saves.map(compactSaveRecord), profiles: records.profiles,
   };
-  validateRelationships(records);
-  return backup;
+  return writeArchive(backup, files);
 }
 
-export function decodeBackup(input) {
-  if (typeof input === 'string') {
-    if (input.length > MAX_BACKUP_BYTES * 1.4) throw new Error('This backup is too large.');
-    try { input = JSON.parse(input); } catch { throw new Error('The backup is not valid JSON.'); }
+export async function decodeBackup(input) {
+  const { manifest, read } = await readArchive(input);
+  if (!plain(manifest) || manifest.format !== BACKUP_FORMAT || manifest.version !== 2) throw new Error('This isn’t a PathOS backup file, or it uses an unsupported format.');
+  for (const store of STORES) if (!Array.isArray(manifest[store])) throw new Error(`The backup is missing ${store}.`);
+  const assets = new Map();
+  async function assetData(path) {
+    if (typeof path !== 'string' || !/^assets\/[a-f0-9]{64}$/.test(path)) throw new Error('A game file has an invalid asset reference.');
+    if (!assets.has(path)) {
+      const data = await read(path);
+      if ('assets/' + await hashBytes(data) !== path) throw new Error('A game file failed its content checksum.');
+      assets.set(path, data);
+    }
+    return assets.get(path);
   }
-  if (!plain(input) || input.format !== BACKUP_FORMAT || input.version !== 1) throw new Error('This isn’t a PathOS backup file, or it uses an unsupported format.');
-  assertJSONValue(input);
-  for (const store of STORES) if (!Array.isArray(input[store])) throw new Error(`The backup is missing ${store}.`);
-  let totalBytes = 0;
+  const versions = [];
+  for (const version of manifest.versions) {
+    if (!Array.isArray(version.files)) throw new Error('A version contains no file list.');
+    const files = [];
+    for (const file of version.files) {
+      const { asset, ...metadata } = file;
+      files.push({ ...metadata, data: await assetData(asset) });
+    }
+    versions.push({ ...version, files });
+  }
   const records = {
-    games: input.games,
-    versions: input.versions.map(version => {
-      if (!Array.isArray(version.files)) throw new Error('A version contains no file list.');
-      return { ...version, files: version.files.map(file => {
-        if (file.encoding !== 'base64') throw new Error('A game file has unsupported encoding.');
-        totalBytes += typeof file.data === 'string' ? Math.floor(file.data.length * 0.75) : 0;
-        if (totalBytes > MAX_BACKUP_BYTES) throw new Error('This backup is too large.');
-        const { encoding, ...decoded } = file;
-        return { ...decoded, data: base64ToBytes(file.data) };
-      }) };
-    }),
-    saves: input.saves,
-    profiles: input.profiles,
+    games: manifest.games, versions, saves: manifest.saves, profiles: manifest.profiles,
   };
+  validateLibrary(records);
+  records.saves = records.saves.map(compactSaveRecord);
+  return records;
+}
+
+function validateLibrary(records) {
   for (const store of STORES) {
+    if (!Array.isArray(records[store])) throw new Error(`The library is missing ${store}.`);
     const ids = new Set();
     for (const record of records[store]) {
       validateRecord(store, record);
@@ -99,7 +118,6 @@ export function decodeBackup(input) {
     }
   }
   validateRelationships(records);
-  return records;
 }
 
 export function validateRelationships(records) {
@@ -135,7 +153,7 @@ export function createVault(transact, storageKind = 'browser') {
         for (const record of imported[store]) {
           const previous = byId.get(record.id);
           if (store === 'versions' && previous && (previous.gameId !== record.gameId || previous.contentHash !== record.contentHash)) throw new Error('The backup contains a version ID that conflicts with an installed version.');
-          if (store === 'saves' && previous && canonical(previous) !== canonical(record)) throw new Error('The backup contains a save ID that conflicts with an existing save. Export both libraries separately before restoring.');
+          if (store === 'saves' && previous && canonical(compactSaveRecord(previous)) !== canonical(compactSaveRecord(record))) throw new Error('The backup contains a save ID that conflicts with an existing save. Export both libraries separately before restoring.');
           if (!previous) byId.set(record.id, record);
         }
         merged[store] = [...byId.values()];
@@ -155,6 +173,7 @@ export function createVault(transact, storageKind = 'browser') {
     getAll: (store, index, key) => transact([store], 'readonly', tx => tx.getAll(store, index, key)),
     put(store, record) {
       validateRecord(store, record);
+      if (store === 'saves') record = compactSaveRecord(record);
       return transact([store], 'readwrite', async tx => { await tx.put(store, record); return record; });
     },
     delete: (store, key) => transact([store], 'readwrite', tx => tx.delete(store, key)),
@@ -195,6 +214,7 @@ export function createVault(transact, storageKind = 'browser') {
         ids.add(record.id);
       }
       if (!records.length) return Promise.resolve([]);
+      records = records.map(compactSaveRecord);
       return transact(['versions', 'saves'], 'readwrite', async tx => {
         const installed = new Map();
         for (const gameId of new Set(records.map(record => record.gameId))) {
@@ -204,7 +224,7 @@ export function createVault(transact, storageKind = 'browser') {
         for (const record of records) {
           if (!installed.get(record.gameId).includes(record.versionId)) throw new Error('The save batch contains a save that does not belong to an installed game version.');
           const previous = await tx.get('saves', record.id);
-          if (previous && canonical(previous) !== canonical(record)) throw new Error('This save ID already exists. Save edits and migrations as a new copy.');
+          if (previous && canonical(compactSaveRecord(previous)) !== canonical(record)) throw new Error('This save ID already exists. Save edits and migrations as a new copy.');
         }
         const expired = new Set();
         for (const versionId of new Set(records.filter(record => record.kind === 'auto').map(record => record.versionId))) {
@@ -227,7 +247,23 @@ export function createVault(transact, storageKind = 'browser') {
       });
     },
     exportBackup: () => api.exportRecords().then(encodeBackup),
-    restoreBackup: input => mergeRecords(decodeBackup(input)),
+    restoreBackup: input => decodeBackup(input).then(records => mergeRecords(records)),
+    restoreRecords(records) {
+      validateLibrary(records);
+      return mergeRecords({ ...records, saves: records.saves.map(compactSaveRecord) });
+    },
+    compactSaves() {
+      return transact(['saves'], 'readwrite', async tx => {
+        let removedBytes = 0;
+        for (const record of await tx.getAll('saves')) {
+          validateSaveRecord(record);
+          const compact = compactSaveRecord(record);
+          const before = canonical(record), after = canonical(compact);
+          if (before !== after) { await tx.put('saves', compact); removedBytes += Math.max(0, before.length - after.length); }
+        }
+        return removedBytes;
+      });
+    },
     migrateRecords(records) {
       // Only the existing on-device library takes this path. Avoid encoding the
       // whole library as a backup and imposing a backup-file size limit on it.

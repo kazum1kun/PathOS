@@ -6,6 +6,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import * as storageModule from '../src/storage.js';
 import * as compatibilityModule from '../src/compatibility.js';
 import { prepareLegacySaves } from '../src/save-import.js';
+import { encodeSave, readSaveFile } from '../src/transfer.js';
 
 const root = new URL('../', import.meta.url);
 const now = '2026-10-16T12:00:00.000Z';
@@ -63,6 +64,9 @@ async function harness({ installed = [version()], saved = [], runtimeFactory, ar
   const bindings = {
     inspectArchive: async () => ({ candidates: [archiveCandidate], warnings: [] }),
     openVault: async () => vault,
+    decodeBackup: storageModule.decodeBackup,
+    bytesToBase64: storageModule.bytesToBase64,
+    encodeSave, readSaveFile,
     validateRecord: storageModule.validateRecord,
     ...compatibilityModule,
     prepareLegacySaves,
@@ -204,7 +208,7 @@ test('resuming an autosave does not save again for key ordering, engine caches o
     assert.equal(records.length, 2, 'a new story position must create a checkpoint');
     const automatic = records.find(record => record.id !== original.id);
     assert.equal(automatic.snapshot.preview, 'A new choice awaits.');
-    assert.equal(automatic.storage['persist:small-story:state'], 'new engine page cache', 'engine caches are retained in real saves');
+    assert.equal(automatic.storage['persist:small-story:state'], undefined, 'regenerable engine caches must not inflate stored saves');
     await h.app.refresh();
     assert.match(h.document.querySelector('#detail').textContent, /A new choice awaits/);
     assert.match(h.document.querySelector('#detail').textContent, /line 7/);
@@ -417,8 +421,8 @@ test('app save editor creates a copy and portable imports map to the installed c
     const edited = (await h.vault.getAll('saves')).find(record => record.kind === 'edited');
     assert.equal(edited.snapshot.state.stats.strength, 42);
     assert.deepEqual(await h.vault.get('saves', original.id), original);
-    const portable = { format: 'story-vault-save', version: 1, source: { contentHash: version().contentHash }, save: { ...original, gameId: 'foreign-device-game-id', versionId: 'foreign-device-version-id' } };
-    await h.app.importSave(new File([JSON.stringify(portable)], 'save.json'));
+    const portable = { source: { contentHash: version().contentHash }, save: { ...original, gameId: 'foreign-device-game-id', versionId: 'foreign-device-version-id' } };
+    await h.app.importSave(new File([await encodeSave(portable)], 'save.pathos-save.zip'));
     const imported = (await h.vault.getAll('saves')).find(record => record.name.endsWith('(imported)'));
     assert.equal(imported.gameId, game.id);
     assert.equal(imported.versionId, 'v1');

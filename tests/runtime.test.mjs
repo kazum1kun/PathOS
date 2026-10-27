@@ -391,7 +391,8 @@ test('snapshots preserve page-start state and restore without double applying pa
   assert.equal(captured.state.lineNum, 0);
   assert.equal(captured.checkpoint.atSceneStart, true);
   assert.equal(captured.scene.crc, 123);
-  assert.deepEqual(captured.scene.lines, ['*set gold +10', 'Visible page', '*choice']);
+  assert.equal(captured.scene.lineCount, 3);
+  assert.equal(captured.scene.lines, undefined, 'chapter source must not be copied into each save');
   env.message('restore', captured); env.flush();
   assert.equal(env.context.stats.gold, 15);
   assert.deepEqual(Array.from(env.context.restoreArguments), [null, false]);

@@ -3,7 +3,11 @@ self.addEventListener('install',event=>event.waitUntil((async()=>{
   const cache=await caches.open(CACHE);
   const response=await fetch('./asset-list.json',{cache:'no-store'});
   if(!response.ok)throw new Error('Asset list unavailable');
-  await cache.addAll(await response.json());
+  // Fixed asset URLs may still be fresh in the HTTP cache after a deployment.
+  // Fetch this build from the network instead of caching older scripts/styles
+  // alongside its new HTML, then keep serving the complete shell offline.
+  const assets=await response.json();
+  await cache.addAll(assets.map(asset=>new Request(new URL(asset,self.location.href),{cache:'reload'})));
 })()));
 // A waiting shell activates on the next app launch, never during a live game.
 self.addEventListener('activate',event=>event.waitUntil((async()=>{

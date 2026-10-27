@@ -32,9 +32,25 @@ export function validateSaveRecord(save) {
     // ChoiceScript permits the line-count sentinel when finishing a scene.
     if (state.lineNum > save.snapshot.scene.lines.length) throw new Error('The saved line number is outside its scene source.');
   }
+  if (save.snapshot.scene.lineCount !== undefined && (!Number.isInteger(save.snapshot.scene.lineCount) || save.snapshot.scene.lineCount < 0 || state.lineNum > save.snapshot.scene.lineCount)) throw new Error('The saved line number is outside its scene source.');
   if (save.storage !== undefined && !isObject(save.storage)) throw new Error('The saved storage is invalid.');
   assertJSONValue(save);
   return save;
+}
+
+// Scene source already lives in the installed package. The runtime reconstructs
+// the engine's current/recovery caches from the portable state on resume.
+// Keep quick-save slots and every unknown storage key: those can be user data.
+export function compactSaveRecord(save) {
+  const scene = source => {
+    const { lines, labels, ...metadata } = source;
+    return Array.isArray(lines) ? { ...metadata, lineCount: lines.length } : metadata;
+  };
+  const snapshot = { ...save.snapshot, scene: scene(save.snapshot.scene) };
+  if (snapshot.checkpoint?.scene) snapshot.checkpoint = { ...snapshot.checkpoint, scene: scene(snapshot.checkpoint.scene) };
+  return { ...save, snapshot, ...(save.storage === undefined ? {} : {
+    storage: Object.fromEntries(Object.entries(save.storage).filter(([key]) => !/^persist:.*:(?:state|statetemp|statebackup)$/.test(key))),
+  }) };
 }
 
 // Reject executable/prototype-bearing data and values JSON cannot preserve.

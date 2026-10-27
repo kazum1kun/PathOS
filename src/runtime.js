@@ -354,8 +354,7 @@ export function runtimeBootstrap(config, inspectChoices) {
     const active = window.stats?.scene;
     const source = active?.name === name ? active : window.allScenes?.[name];
     return { name, crc: source?.crc ?? state.temps?.choice_crc ?? null,
-      ...(Array.isArray(source?.lines) ? { lines: source.lines.slice() } : {}),
-      ...(source?.labels ? { labels: clone(source.labels) } : {}) };
+      ...(Array.isArray(source?.lines) ? { lineCount: source.lines.length } : {}) };
   }
   function decodeEngineState(scene) {
     if (typeof window.computeCookie === 'function') return JSON.parse(window.computeCookie(scene.stats, scene.temps, scene.lineNum, scene.indent));

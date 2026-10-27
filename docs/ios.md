@@ -102,15 +102,16 @@ Release builds set `CURRENT_PROJECT_VERSION` to the Codemagic workflow's `BUILD_
 
 Importing works the same way as on the website. The Import button opens the iOS file picker, so you can choose APK and ZIP files from the Files app. Nothing is installed as an Android app.
 
-Exporting opens the native share sheet. Choose **Save to Files** to keep a backup outside the app. If you cancel the sheet, the export is reported as cancelled and your library is unchanged. The native export accepts UTF-8 JSON text up to 256 MiB, so a very large full-library backup may hit that limit or run out of device memory. Exports of individual saves are much smaller.
+Exporting opens the native share sheet. Choose **Save to Files** to keep a backup outside the app. If you cancel the sheet, the export is reported as cancelled and your library is unchanged. Backups and individual saves use compressed ZIP files. The native bridge accepts base64-encoded binary data and writes the decoded ZIP, with a limit of 256 MiB of decoded file data. A very large library may still hit that limit or run out of device memory.
 
 The web layer calls:
 
 ```js
 await window.VaultNative.exportFile({
-  name: 'pathos-backup.json',
-  data: JSON.stringify(backup),
-  mime: 'application/json'
+  name: 'pathos-backup.zip',
+  data: bytesToBase64(compressedBackup),
+  mime: 'application/zip',
+  encoding: 'base64'
 });
 ```
 

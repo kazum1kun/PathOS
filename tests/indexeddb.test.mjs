@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { openVault, MAX_AUTOSAVES_PER_VERSION } from '../src/storage.js';
+import { openVault, decodeBackup, MAX_AUTOSAVES_PER_VERSION } from '../src/storage.js';
+import { compactSaveRecord } from '../src/compatibility.js';
 
 const require = createRequire(import.meta.url);
 const { IDBFactory } = require(require.resolve('fake-indexeddb', { paths: [process.env.PATHOS_TEST_DEPS ?? process.cwd()] }));
@@ -11,6 +12,53 @@ function fixture() {
   const save = { id: 'save', gameId: 'game', versionId: 'v1', name: 'Chapter 1', kind: 'manual', createdAt: '2026-10-16T00:00:00Z', snapshot: { state: { stats: { sceneName: 'chapter1', strength: 5 }, temps: {}, lineNum: 20, indent: 2 }, scene: { name: 'chapter1' } } };
   return { game, version, save };
 }
+
+async function writeUncompacted(indexedDB, name, records) {
+  const database = await new Promise((resolve, reject) => {
+    const request = indexedDB.open(name);
+    request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+  });
+  await new Promise((resolve, reject) => {
+    const transaction = database.transaction(['saves'], 'readwrite');
+    transaction.oncomplete = resolve; transaction.onabort = () => reject(transaction.error);
+    for (const record of records) transaction.objectStore('saves').put(record);
+  });
+  database.close();
+}
+
+test('existing saves compact in place without losing progress or creating restore conflicts', async () => {
+  const indexedDB = new IDBFactory(), name = 'compact-library';
+  const vault = await openVault({ indexedDB, name });
+  const { game, version, save } = fixture();
+  await vault.importVersion(game, version);
+  save.snapshot.scene = { ...save.snapshot.scene, lines: Array(30).fill('Bundled story'), labels: { start: 0 } };
+  save.storage = { 'persist:smoke:state': 'duplicate'.repeat(10000), 'persist:smoke:statebackup': 'recovery', 'persist:smoke:slot1': 'keep me' };
+  await writeUncompacted(indexedDB, name, [save]);
+  assert.ok(await vault.compactSaves() > 0);
+  const compact = compactSaveRecord(save);
+  assert.deepEqual(await vault.get('saves', save.id), compact);
+  assert.equal(await vault.compactSaves(), 0, 'compaction is idempotent');
+  await vault.restoreRecords({ games: [game], versions: [version], saves: [save], profiles: [] });
+  assert.deepEqual(await vault.getAll('saves'), [compact]);
+  const backup = await vault.exportBackup();
+  await vault.deleteGame(game.id); await vault.restoreBackup(backup);
+  assert.deepEqual(await vault.get('saves', save.id), compact);
+  vault.close();
+});
+
+test('a failed compaction leaves every original save untouched', async () => {
+  const indexedDB = new IDBFactory(), name = 'atomic-compaction';
+  const vault = await openVault({ indexedDB, name });
+  const { game, version, save } = fixture();
+  await vault.importVersion(game, version);
+  save.storage = { 'persist:smoke:state': 'duplicate engine cache' };
+  const invalid = { ...structuredClone(save), id: 'z-invalid' }; delete invalid.snapshot.state;
+  await writeUncompacted(indexedDB, name, [save, invalid]);
+  await assert.rejects(vault.compactSaves(), /state/);
+  assert.deepEqual(await vault.get('saves', save.id), save);
+  assert.deepEqual(await vault.get('saves', invalid.id), invalid);
+  vault.close();
+});
 
 test('IndexedDB persists saves and binary assets across connections', async () => {
   const indexedDB = new IDBFactory();
@@ -37,10 +85,10 @@ test('restore conflicts roll back all records while preserving existing saves', 
   const vault = await openVault({ indexedDB: new IDBFactory() });
   const { game, version, save } = fixture();
   await vault.importVersion(game, version); await vault.putSave(save);
-  const backup = await vault.exportBackup();
+  const backup = await decodeBackup(await vault.exportBackup());
   backup.games.push({ id: 'extra', title: 'Must not persist' });
   backup.saves[0].snapshot.state.stats.strength = 99;
-  await assert.rejects(vault.restoreBackup(backup), /conflicts/);
+  await assert.rejects(vault.restoreRecords(backup), /conflicts/);
   assert.equal(await vault.get('games', 'extra'), undefined);
   assert.equal((await vault.get('saves', 'save')).snapshot.state.stats.strength, 5);
   vault.close();
@@ -105,11 +153,11 @@ test('only automatic snapshots are trimmed, independently for each installed ver
   vault.close();
 });
 
-test('delete cascades through version/save indexes and a JSON backup restores exact data', async () => {
+test('delete cascades through version/save indexes and a compressed backup restores exact data', async () => {
   const vault = await openVault({ indexedDB: new IDBFactory() });
   const { game, version, save } = fixture();
   await vault.importVersion(game, version); await vault.putSave(save);
-  const backup = JSON.stringify(await vault.exportBackup());
+  const backup = await vault.exportBackup();
   await vault.deleteGame('game');
   assert.equal((await vault.getAll('games')).length, 0);
   assert.equal((await vault.getAll('versions')).length, 0);

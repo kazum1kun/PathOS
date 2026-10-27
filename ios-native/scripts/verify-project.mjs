@@ -48,6 +48,13 @@ top.VaultNative.__settle({id: messages[1].id, ok: false, error: 'Disk full'});
 await assert.rejects(failure, /Disk full/);
 await assert.rejects(top.VaultNative.exportFile({name: 'save.json', data: 123}), /text data/);
 assert.equal(messages.length, 2);
+const compressed = top.VaultNative.exportFile({name: 'backup.zip', data: 'UEsDBA==', mime: 'application/zip', encoding: 'base64'});
+assert.equal(messages[2].encoding, 'base64');
+assert.equal(messages[2].data, 'UEsDBA==');
+assert.equal(messages[2].mime, 'application/zip');
+top.VaultNative.__settle({id: messages[2].id, ok: true, result: {shared: true}});
+assert.equal((await compressed).shared, true);
+await assert.rejects(top.VaultNative.exportFile({name: 'backup.zip', data: '', encoding: 'other'}), /encoding/);
 for (const location of [{protocol: 'https:', hostname: 'example.com'}, {protocol: 'capacitor:', hostname: 'other'}, {protocol: 'capacitor:', hostname: 'localhost', port: '1234'}]) {
   const remote = {}; remote.top = remote;
   new vm.Script(script).runInContext(vm.createContext({window: remote, location}));

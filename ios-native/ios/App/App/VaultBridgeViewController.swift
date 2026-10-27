@@ -83,9 +83,14 @@ final class VaultBridgeViewController: CAPBridgeViewController {
             reply(requestID, error: "Finish the current export before starting another.")
             return
         }
-        guard let text = payload["data"] as? String,
-              let data = text.data(using: .utf8), data.count <= 256 * 1024 * 1024 else {
-            reply(requestID, error: "The export must be UTF-8 text of at most 256 MB.")
+        guard let text = payload["data"] as? String else {
+            reply(requestID, error: "The export data is missing.")
+            return
+        }
+        let encoding = payload["encoding"] as? String ?? "utf8"
+        let decoded = encoding == "base64" ? Data(base64Encoded: text) : encoding == "utf8" ? text.data(using: .utf8) : nil
+        guard let data = decoded, data.count <= 256 * 1024 * 1024 else {
+            reply(requestID, error: "The export must contain valid data of at most 256 MB.")
             return
         }
         guard view.window != nil, presentedViewController == nil else {
@@ -93,13 +98,13 @@ final class VaultBridgeViewController: CAPBridgeViewController {
             return
         }
 
-        let suppliedName = (payload["name"] as? String ?? "pathos-backup.json") as NSString
+        let suppliedName = (payload["name"] as? String ?? "pathos-backup.zip") as NSString
         var filename = suppliedName.lastPathComponent
             .components(separatedBy: CharacterSet(charactersIn: "/\\:\u{0}"))
             .joined(separator: "_")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        if filename.isEmpty || filename == "." || filename == ".." { filename = "pathos-backup.json" }
-        if filename.utf8.count > 180 { filename = "pathos-backup.json" }
+        if filename.isEmpty || filename == "." || filename == ".." { filename = "pathos-backup.zip" }
+        if filename.utf8.count > 180 { filename = "pathos-backup.zip" }
 
         let directory = exportDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let url = directory.appendingPathComponent(filename, isDirectory: false)
@@ -157,15 +162,16 @@ final class VaultBridgeViewController: CAPBridgeViewController {
             catch (error) { pending.delete(id); reject(error); }
           });
         },
-        exportFile({name, data, mime = 'application/json'}) {
+        exportFile({name, data, mime = 'application/json', encoding = 'utf8'}) {
           if (typeof name !== 'string' || typeof data !== 'string') {
             return Promise.reject(new TypeError('Export requires a filename and text data.'));
           }
+          if (!['utf8', 'base64'].includes(encoding)) return Promise.reject(new TypeError('Unsupported export encoding.'));
           const id = `export_${Date.now()}_${++counter}`;
           return new Promise((resolve, reject) => {
             pending.set(id, {resolve, reject});
             try {
-              window.webkit.messageHandlers.pathosExport.postMessage({id, name, data, mime});
+              window.webkit.messageHandlers.pathosExport.postMessage({id, name, data, mime, encoding});
             } catch (error) {
               pending.delete(id);
               reject(error);

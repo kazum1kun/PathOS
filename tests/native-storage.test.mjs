@@ -69,7 +69,7 @@ test('native migration copies exact assets and saves, retains the source and nev
   await vault.restoreBackup(backup); await vault.restoreBackup(backup);
   assert.deepEqual(await vault.get('saves', 's'), save, 'reordered native JSON must allow an idempotent restore');
   const browser = await openVault({ indexedDB: new IDBFactory() });
-  await browser.restoreBackup(JSON.stringify(await vault.exportBackup()));
+  await browser.restoreBackup(await vault.exportBackup());
   assert.deepEqual((await browser.get('versions', 'v')).files, version.files);
   assert.deepEqual(await browser.get('saves', 's'), save);
   vault.close(); browser.close(); legacy.close();

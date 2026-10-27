@@ -35,7 +35,7 @@ function safePath(path) {
 }
 
 /** Read sizes and original names before JSZip can sanitize names or allocate expanded entries. */
-function inspectDirectory(bytes, limits) {
+export function inspectDirectory(bytes, limits) {
   if (bytes.byteLength > limits.archiveBytes) fail('ARCHIVE_TOO_LARGE', `Archive exceeds the ${Math.floor(limits.archiveBytes / 1048576)} MiB import limit.`);
   if (bytes.byteLength < 22) fail('NOT_ZIP', 'Choose an APK or ZIP archive containing a ChoiceScript game.');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -263,7 +263,7 @@ for (let i = 0; i < 256; i++) { let value = i; for (let j = 0; j < 8; j++) value
 function crc32(bytes) { let value = 0xffffffff; for (const byte of bytes) value = crcTable[(value ^ byte) & 255] ^ (value >>> 8); return (value ^ 0xffffffff) >>> 0; }
 
 // JSZip's chunked stream lets us abort a forged size before allocating its output.
-function expandBounded(file, entry) {
+export function expandBounded(file, entry) {
   return new Promise((resolve, reject) => {
     const chunks = [], stream = file.internalStream('uint8array');
     let length = 0, failed = false;

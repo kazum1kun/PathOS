@@ -1,9 +1,10 @@
 import { inspectArchive } from './importer.js';
-import { openVault } from './storage.js';
+import { openVault, decodeBackup, bytesToBase64 } from './storage.js';
 import { assessCompatibility, migrateSave, cloneEditedSave, validateSaveRecord, restartFromCheckpoint } from './compatibility.js';
 import { createRuntime } from './runtime.js';
 import { createDemoArchive } from './demo.js';
 import { prepareLegacySaves } from './save-import.js';
+import { encodeSave, readSaveFile } from './transfer.js';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -129,7 +130,7 @@ async function handleAction(action,id) {
   if(action==='activate'){await db.put('games',{...game,activeVersionId:id});await refresh();return;}
   if(action==='play-version'){await launch(game,versions.find(v=>v.id===id));return;}
   if(action==='edit'){openEditor(save);return;}
-  if(action==='export'){await exportFile(`${safeName(game.title)}-${safeName(save.name)}.json`,{format:'story-vault-save',version:1,game:{identity:game.identity,title:game.title},source:{contentHash:versions.find(v=>v.id===save.versionId)?.contentHash},save});return;}
+  if(action==='export'){await exportFile(`${safeName(game.title)}-${safeName(save.name)}.pathos-save.zip`,await encodeSave({game:{identity:game.identity,title:game.title},source:{contentHash:versions.find(v=>v.id===save.versionId)?.contentHash},save}));return;}
   if(action==='delete'){
     confirmDeleteSaves([save]);return;
   }
@@ -266,22 +267,21 @@ function openEditor(save) {
 
 function safeName(value){return String(value||'pathos').replace(/[^a-z0-9_-]+/gi,'-').slice(0,100);}
 async function exportFile(name,value){
-  const data=JSON.stringify(value,null,2), mime='application/json';
-  if(window.VaultNative?.exportFile){await window.VaultNative.exportFile({name,data,mime});return;}
-  const blob=new Blob([data],{type:mime});
+  const mime='application/zip';
+  if(window.VaultNative?.exportFile){await window.VaultNative.exportFile({name,data:bytesToBase64(value),mime,encoding:'base64'});return;}
+  const blob=new Blob([value],{type:mime});
   const file=new File([blob],name,{type:mime});
   if(navigator.canShare?.({files:[file]})&&navigator.share){try{await navigator.share({files:[file],title:name});return;}catch(error){if(error.name==='AbortError')return;}}
   const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
 }
 async function importSave(file){
-  if(file.size>20*1024*1024)throw new Error('This save file is larger than 20 MB.');
-  const envelope=JSON.parse(await file.text());
+  const envelope=await readSaveFile(file);
   const game=games.find(g=>g.id===selected);if(!game)throw new Error('Import the matching game first.');
   if(envelope.format!=='story-vault-save'){
     if(envelope.format==='story-vault-backup')throw new Error('Use Restore backup to import a complete library.');
     return previewLegacyImport(envelope,game);
   }
-  if(envelope.version!==1)throw new Error('This PathOS save file uses an unsupported format version.');
+  if(envelope.version!==2)throw new Error('This PathOS save file uses an unsupported format version.');
   const contentHash=envelope.source?.contentHash, source=versions.find(v=>v.gameId===game.id&&v.contentHash===contentHash);
   if(!source)throw new Error('The game version that created this save isn’t installed for the selected game. Install that version first so the save can be verified.');
   const record={...envelope.save,id:uid(),gameId:game.id,versionId:source.id,createdAt:new Date().toISOString(),name:(envelope.save.name||'Imported save')+' (imported)'};
@@ -330,12 +330,11 @@ function help(){modal(`<h2>Your games, kept together</h2><p>Import an APK that c
 $('#import').onclick=()=>{delete $('#archive-file').dataset.target;$('#archive-file').click();};
 $('#archive-file').onchange=event=>{const file=event.target.files[0];if(file)importArchive(file,event.target.dataset.target).catch(report);event.target.value='';};
 $('#save-file').onchange=event=>{const file=event.target.files[0];if(file)importSave(file).catch(report);event.target.value='';};
-$('#backup').onclick=async()=>{try{if(runtime)await flush();notify('Preparing a backup of games, versions, and saves…');await exportFile('PathOS-Backup-'+new Date().toISOString().slice(0,10)+'.json',await db.exportBackup());notify('Backup ready. Keep a copy somewhere outside PathOS.');}catch(e){report(e);}};
+$('#backup').onclick=async()=>{try{if(runtime)await flush();notify('Compressing games, versions, and saves…');await exportFile('PathOS-Backup-'+new Date().toISOString().slice(0,10)+'.pathos-backup.zip',await db.exportBackup());notify('Backup ready. Keep a copy somewhere outside PathOS.');}catch(e){report(e);}};
 $('#restore-backup').onclick=()=>$('#backup-file').click();
 $('#backup-file').onchange=async event=>{const file=event.target.files[0];event.target.value='';if(!file)return;try{
-  if(file.size>700*1024*1024)throw new Error('This backup is too large to restore here.');
-  const backup=JSON.parse(await file.text());
-  modal(`<h2>Restore a library backup</h2><p>This adds ${esc(backup.games?.length??'?')} games and ${esc(backup.saves?.length??'?')} saves to the library on this device. PathOS checks for conflicts before changing anything.</p><div class="modal-error" id="restore-error"></div><div class="modal-actions"><button data-close>Cancel</button><button id="restore-confirm" class="primary">Restore backup</button></div>`,()=>{$('#restore-confirm').onclick=async()=>{try{$('#restore-confirm').disabled=true;await db.restoreBackup(backup);$('#modal').close();await refresh();notify('Backup restored. Games and saves are available on this device.');}catch(e){$('#restore-error').textContent=e.message;$('#restore-confirm').disabled=false;}};});
+  const backup=await decodeBackup(file);
+  modal(`<h2>Restore a library backup</h2><p>This adds ${esc(backup.games.length)} games and ${esc(backup.saves.length)} saves to the library on this device. PathOS checks for conflicts before changing anything.</p><div class="modal-error" id="restore-error"></div><div class="modal-actions"><button data-close>Cancel</button><button id="restore-confirm" class="primary">Restore backup</button></div>`,()=>{$('#restore-confirm').onclick=async()=>{try{$('#restore-confirm').disabled=true;await db.restoreRecords(backup);$('#modal').close();await refresh();notify('Backup restored. Games and saves are available on this device.');}catch(e){$('#restore-error').textContent=e.message;$('#restore-confirm').disabled=false;}};});
 }catch(e){report(e);}};
 $('#search').oninput=render;$('#help').onclick=help;$('#save-now').onclick=manualSave;
 $('#debug-choices').onclick=toggleChoiceDebug;
@@ -357,4 +356,4 @@ document.addEventListener('visibilitychange',()=>{if(document.visibilityState===
 document.addEventListener('vault-native-pause',()=>flush().catch(report).finally(()=>window.VaultNative?.storage?.({operation:'backgroundSaveFinished'}).catch(report)));
 window.addEventListener('pagehide',()=>{flush().catch(()=>{});});
 
-try{db=await openVault();setupStorageHelp();await refresh();if('serviceWorker' in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').catch(error=>console.warn('Offline shell unavailable',error));}catch(error){report(error);$('#import').disabled=true;}
+try{db=await openVault();await db.compactSaves();setupStorageHelp();await refresh();if('serviceWorker' in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').catch(error=>console.warn('Offline shell unavailable',error));}catch(error){report(error);$('#import').disabled=true;}

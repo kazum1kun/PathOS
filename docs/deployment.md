@@ -106,7 +106,7 @@ Commit and push the updated workflow and documentation, then rescan the configur
 
 The workflow passes the selected repository branch to Cloudflare. A build from the Pages project's production branch updates the production site; other branches create [preview deployments](https://developers.cloudflare.com/pages/configuration/preview-deployments/). Use the stable production URL for your library: preview URLs have separate browser storage.
 
-Codemagic performs the build, so no Cloudflare build command or output-directory setting is needed for Direct Upload. Keep Pages' default cache behavior; avoid custom rules that give `index.html`, `sw.js`, or the web manifest long cache lifetimes.
+Codemagic performs the build, so no Cloudflare build command or output-directory setting is needed for Direct Upload. Include the generated `_headers` file when uploading to Pages. It makes the browser revalidate app files, whose URLs stay the same between builds; avoid Cloudflare cache rules that override it with long browser cache lifetimes. The service worker still caches the complete app for offline use and fetches fresh files when installing an update.
 
 ## Installing in the browser and storage
 
@@ -118,6 +118,8 @@ Where the browser supports it, the app asks for persistent storage, but it can't
 
 ## Updating the website
 
-Build the new source, deploy all of `dist/`, and reopen the site at the same address. Don't rename the IndexedDB database (`story-vault`). Make schema changes through versioned migrations. Updating the app doesn't touch imported game packages or their saves.
+Build the new source, deploy all of `dist/`, and reopen the site at the same address. Don't rename the IndexedDB database (`story-vault`). Make schema changes through versioned migrations. Updating the app preserves imported game packages and saved progress. Existing saves are compacted on launch to remove duplicate chapter source and regenerable engine caches.
+
+After deploying, let the site load online, close every PathOS tab and Home Screen window, then reopen it to activate a waiting update. An update waits until the previous app session closes so it cannot interrupt a live game. If an older installation has a menu that does not respond after an update, repeat that close-and-reopen cycle once the corrected deployment is live. Keep browser site data: it contains the imported library and saves.
 
 To move games and saves between the browser and the iOS app, export a backup. This release intentionally has no sync between devices.

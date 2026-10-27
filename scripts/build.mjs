@@ -10,7 +10,7 @@ async function walk(dir,prefix='') {
   for (const e of await readdir(dir,{withFileTypes:true})) {
     const relative=prefix+e.name;
     if(e.isDirectory()) await walk(path.join(dir,e.name),relative+'/');
-    else if(!['sw.js','asset-list.json'].includes(relative)) assets.push('./'+relative);
+    else if(!['sw.js','asset-list.json','_headers'].includes(relative)) assets.push('./'+relative);
   }
 }
 await walk(path.join(root,'dist'));
