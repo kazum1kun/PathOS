@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Reader control regression check</title>
+<style>
+  body{font:20px/1.65 Georgia,serif;max-width:680px;margin:auto;padding:24px}
+  .choice>div{border:1px solid #a9acaf;border-bottom:0}
+  .choice>div:last-child{border-bottom:1px solid #a9acaf}
+  .choice label{display:block;padding:.75em;cursor:pointer}
+  .choice>div:hover{background-color:#e4ded8}
+  .selected,.selectedKeyboard{background-color:#007aff;color:white}
+  .next{display:block;width:100%;margin:24px 0;padding:8px;background:#626160;color:white;border:none;border-radius:.5em;font-weight:bold}
+</style></head><body>
+<h1>Reader controls</h1>
+<p>Check choice contrast and Next borders after changing theme, selection, hover, and keyboard focus.</p>
+<p><label for="test-theme">Theme</label> <select id="test-theme"><option value="dark">Dark</option><option value="light">Light</option></select></p>
+<p id="appearance-check" role="status"></p>
+<form id="choice-form"><div class="choice">
+  <div id="first-choice"><label><input type="radio" name="path" value="tower" checked> <span>Climb the tower and light the lamp.</span></label></div>
+  <div id="second-choice"><label><input type="radio" name="path" value="shore"> <span>Search the shore for another path.</span></label></div>
+  <div id="disabled-choice" class="disabled"><label><input type="radio" name="path" value="guide" disabled> <span>Hire a guide. You need more supplies.</span></label></div>
+</div><button class="next" type="submit">Next</button></form>
+<p id="result" role="status"></p>
+<script type="module">
+  import { readerStyles } from '../../src/settings.js';
+  const style=document.createElement('style');document.head.append(style);
+  const theme=document.querySelector('#test-theme');
+  function luminance(color){const channels=color.match(/[\d.]+/g).slice(0,3).map(Number).map(value=>{value/=255;return value<=.04045?value/12.92:((value+.055)/1.055)**2.4;});return channels[0]*.2126+channels[1]*.7152+channels[2]*.0722;}
+  function verify(){
+    let minimum=Infinity;
+    for(const row of document.querySelectorAll('.choice>div:not(.disabled)')){
+      let background=row;
+      while(background.parentElement&&getComputedStyle(background).backgroundColor==='rgba(0, 0, 0, 0)')background=background.parentElement;
+      const foreground=luminance(getComputedStyle(row.querySelector('span')).color),fill=luminance(getComputedStyle(background).backgroundColor);
+      minimum=Math.min(minimum,(Math.max(foreground,fill)+.05)/(Math.min(foreground,fill)+.05));
+    }
+    const border=getComputedStyle(document.querySelector('.next'));
+    const passes=minimum>=4.5&&border.borderTopStyle==='solid'&&parseFloat(border.borderTopWidth)>0;
+    const check=document.querySelector('#appearance-check');check.dataset.result=passes?'pass':'fail';check.dataset.minimumContrast=minimum.toFixed(2);
+    check.textContent=passes?'Appearance checks passed: readable choices and a visible Next border.':'Appearance check failed: choice contrast or Next border.';
+  }
+  const apply=()=>{style.textContent=readerStyles({theme:theme.value,fontSize:20});verify();};
+  theme.addEventListener('change',apply);apply();
+  for(const event of ['change','focusin','pointerover','pointerout'])document.querySelector('#choice-form').addEventListener(event,()=>requestAnimationFrame(verify));
+  document.querySelector('#choice-form').addEventListener('submit',event=>{event.preventDefault();document.querySelector('#result').textContent='Selected path: '+new FormData(event.target).get('path');});
+</script></body></html>

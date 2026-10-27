@@ -35,6 +35,7 @@ export function readerStyles(input, systemDark = false) {
   if (settings.useGameAppearance) return motion;
   const dark = resolvedTheme(settings, systemDark) === 'dark';
   const paper = dark ? '#1a1814' : '#fbf8f1', ink = dark ? '#ebe4d5' : '#1e1b16', accent = dark ? '#e0836f' : '#9e3326';
+  const hover = dark ? '#302a22' : '#eee5d8', selected = dark ? '#49342a' : '#ead5c2', rule = dark ? '#706557' : '#b2a38d';
   const width = { narrow: '480px', comfortable: '680px', wide: '900px', full: 'none' }[settings.readerWidth];
   const font = READER_FONTS[settings.fontFamily];
   return `
@@ -46,6 +47,16 @@ html:root body :is(h1,h2,h3,h4){font-family:${font}!important;color:${ink}!impor
 html:root body h1{font-size:1.65em!important}html:root body h2{font-size:1.35em!important}
 html:root body a{color:${accent}!important}
 html:root body :is(button,input,select,textarea){background-color:${paper}!important;color:${ink}!important;border-color:${accent}!important;max-width:100%!important}
+html:root body :is(button,input[type=button],input[type=submit],input[type=reset],.next){box-sizing:border-box!important;background-color:${paper}!important;color:${ink}!important;border:1px solid ${accent}!important;border-radius:4px!important;padding:.4em .75em}
+html:root body :is(input[type=radio],input[type=checkbox]){accent-color:${accent}}
+html:root body .choice>div{background-color:${paper}!important;color:${ink}!important;border-color:${rule}!important}
+html:root body .choice label{background-color:transparent!important;color:inherit!important}
+@media(hover:hover){
+  html:root body .choice>div:where(:not(.disabled):hover),html:root body :is(button,input[type=button],input[type=submit],input[type=reset],.next):where(:not(:disabled):hover){background-color:${hover}!important;color:${ink}!important}
+}
+html:root body .choice>div:is(.selected,.selectedKeyboard,:focus-within),html:root body :is(button,.next).selectedKeyboard{background-color:${selected}!important;color:${ink}!important;box-shadow:inset 3px 0 ${accent}!important}
+html:root body .choice>div:has(input[type=radio]:checked){background-color:${selected}!important;color:${ink}!important;box-shadow:inset 3px 0 ${accent}!important}
+html:root body .choice .disabled{opacity:.55!important}
 html:root body :is(button,input,select,textarea):disabled{opacity:.5!important;cursor:default!important}
 html:root body :is(img,video){max-width:100%!important;height:auto}
 html:root body :is(button,a,input,select,textarea):focus-visible{outline:2px solid ${accent}!important;outline-offset:3px}

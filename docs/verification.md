@@ -1,5 +1,11 @@
 # Verification for version 0.1.0
 
+## Reader choice colors and Next borders (2026-10-27)
+
+Reader appearance overrides now cover choice hover, checked and keyboard-focused rows, including inherited label text. Dark and light modes use matching foreground/background pairs, and action controls receive a complete solid border instead of only a border color. Native radio/check controls use the theme accent. Selected states take precedence over hover, and the original game appearance option still bypasses these overrides.
+
+The browser fixture at `tests/fixtures/reader-controls.html` reproduces the engine's pale hover fill and borderless `.next` button. Serve the repository root to open it. It checks rendered text contrast (at least 4.5:1) and a visible solid Next border when theme, selection, hover, or keyboard focus changes. Before the fix, the first hovered row rendered pale text on a pale background and Next had a zero-width border. After the fix, minimum enabled-choice contrast was 9.18:1 in dark mode and 12.09:1 in light mode; keyboard selection, Next submission, and a 390px layout passed. The complete suite passes 139 tests with three optional private-game checks skipped, and the web build passes. The private Magikiras package was not available for a direct playthrough.
+
 ## App and reader settings (2026-10-27)
 
 Settings are available from the library menu and reader Tools. Theme supports device, light, and dark modes. The reader supports serif, sans serif, and monospace fonts, 14–32px text, line spacing, reading width, original game appearance, and reduced motion. Appearance is injected into the isolated frame and updates without replaying the page or changing game state. Reduced motion keeps short animation/transition completion events so engines can still advance pages.
