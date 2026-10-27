@@ -53,7 +53,7 @@ The workflow runs manually and keeps build artifacts for seven days. GitHub's st
 
 [`Publish nightly`](../.github/workflows/nightly.yml) runs daily at **2:17 a.m. America/Phoenix**, using the UTC cron expression `17 9 * * *`. It builds the latest default-branch commit only when it differs from the published nightly or when release assets are missing. This avoids spending Mac runner minutes rebuilding an unchanged commit. To change the time, edit the cron expression; Phoenix stays at UTC-7 year-round.
 
-To activate it, commit and push `.github/workflows/`, `scripts/ci/nightly.mjs`, its tests, and the documentation to the GitHub repository's default branch. No personal access token, Apple signing secrets, or Cloudflare credentials are needed. The workflow uses GitHub's built-in `GITHUB_TOKEN`, granting `contents: write` only to the release job. Repository or organization policy must allow that job to write releases and update the `nightly` tag.
+To activate it, commit and push `.github/workflows/`, `scripts/ci/nightly.mjs`, its tests, and the documentation to the GitHub repository's default branch. Configure the Cloudflare repository secret and variables listed under [GitHub Actions](#github-actions); the nightly workflow forwards the API token and optional account ID secret to the reusable web workflow. No personal access token or Apple signing secrets are needed. GitHub release publishing uses the built-in `GITHUB_TOKEN`, granting `contents: write` only to the release job. Repository or organization policy must allow that job to write releases and update the `nightly` tag.
 
 For the first release, open **Actions → Publish nightly → Run workflow** and select the default branch. **Rebuild even if this commit is already published** forces a fresh build when needed. Otherwise, an already-published commit is skipped. The existing **Build web app** and **Build iOS app** manual workflows remain available.
 
@@ -67,7 +67,9 @@ The nightly pipeline calls those same build workflows, waits for both to succeed
 
 The release is at `https://github.com/OWNER/REPO/releases/tag/nightly`. Stable download links are `https://github.com/OWNER/REPO/releases/download/nightly/PathOS-unsigned.ipa` and `https://github.com/OWNER/REPO/releases/download/nightly/PathOS-web.zip`; replace `OWNER/REPO` with your GitHub repository. Each successful nightly replaces those assets and moves the tag to the build commit. Build failures leave the prior nightly in place. The prerelease doesn't become the repository's latest stable release. Keep this rolling release editable rather than enabling release immutability for it.
 
-Nightly publishing uploads downloads to GitHub Releases. Use **Build web app** with its deployment checkbox to update Cloudflare Pages. Release files remain available until replaced or deleted; temporary Actions artifacts expire after seven days.
+Each nightly build deploys the website to Cloudflare Pages during the web job, then publishes the downloads to GitHub Releases after both builds succeed. Use **Build web app** with its deployment checkbox for a standalone website deployment. Release files remain available until replaced or deleted; temporary Actions artifacts expire after seven days.
+
+If a nightly run asks for `CLOUDFLARE_API_TOKEN` even though the repository secret exists, check that the calling web job in `nightly.yml` passes it under `secrets`. Reusable workflows do not receive repository secrets automatically. Push the fix and start a new workflow run; rerunning an old run uses its original workflow revision.
 
 GitHub runs schedules from the default branch and may delay scheduled jobs during busy periods. Public repositories' schedules can be disabled after 60 days without activity; re-enable **Publish nightly** in Actions if that happens. See [GitHub's scheduled workflow documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
 
