@@ -43,7 +43,7 @@ jobs:
     if: needs.check.outputs.build == 'true'
     uses: ./.github/workflows/web.yml
     with:
-      deploy_to_cloudflare: false
+      deploy_to_cloudflare: true
 
   ios:
     needs: check
