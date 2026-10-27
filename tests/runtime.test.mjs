@@ -497,6 +497,8 @@ test('debug mode reveals conditions and force-selects a hidden option through th
   const panel=document.querySelector('.pathos-choice-debug');
   assert.match(panel.textContent,/\*if strong → false/);
   assert.match(panel.textContent,/\*selectable_if ready → false/);
+  assert.match(panel.textContent,/stats.strong = false/);
+  assert.match(panel.textContent,/stats.ready = false/);
   assert.equal(panel.querySelectorAll('[data-availability="hidden"]').length,1);
   assert.equal(panel.querySelectorAll('[data-availability="disabled"]').length,1);
   assert.equal(form.style.display,'none');
@@ -516,6 +518,30 @@ test('debug mode reveals conditions and force-selects a hidden option through th
   assert.equal(document.querySelector('.pathos-choice-debug'),null,'old force buttons are removed after progression');
   const saved=env.messages.findLast(message=>message.type==='snapshot').payload;
   assert.equal(saved.transition,'choice');assert.equal(saved.state.lineNum,2);
+});
+
+test('choice debugger renders selection changes and incomplete previews as literal text without executing them', () => {
+  const { document } = parseHTML('<main id="main"></main>'), env = sandbox({ debugMode: true }, document);
+  const source = [...debugChoiceSource];
+  source[2] = '    *set strength + 5';
+  source[4] = '    *set label "<img src=x onerror=alert(1)>"';
+  source[6] = '    *gosub reward';
+  env.run(debugChoiceEngine
+    .replace(JSON.stringify(debugChoiceSource), JSON.stringify(source))
+    .replace('strong:false,ready:false', 'strong:false,ready:false,strength:10,label:"before"')
+    .replace('return this.stats[value];', 'if(value==="strength + 5")return this.stats.strength+5;if(value.startsWith(\'"\'))return JSON.parse(value);return this.stats[value];'));
+  env.flush();
+  const panel = document.querySelector('.pathos-choice-debug');
+  assert.match(panel.textContent, /Checks/);
+  assert.match(panel.textContent, /Selection effects/);
+  assert.match(panel.textContent, /stats.strength: 10 → 15 \(\+5\)/);
+  assert.match(panel.textContent, /stats.label: "before" → "<img src=x onerror=alert\(1\)>"/);
+  assert.match(panel.textContent, /\*gosub reward/);
+  assert.match(panel.textContent, /effects after this jump, call, or interaction are not followed/);
+  assert.equal(panel.querySelector('img'), null);
+  assert.equal(env.context.stats.strength, 10);
+  assert.equal(env.context.stats.label, 'before');
+  assert.equal(env.context.stats.scene.lineNum, 0);
 });
 
 test('debug mode force-selects disabled choices and handles a menu with no selectable options', () => {

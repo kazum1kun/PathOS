@@ -243,6 +243,47 @@ async function importArchive(file,targetGameId) {
   }finally{busy=false;$('#import').disabled=false;}
 }
 
+let fileDragDepth=0;
+function isFileDrag(event){return Array.from(event.dataTransfer?.types||[]).includes('Files')||Array.from(event.dataTransfer?.items||[]).some(item=>item.kind==='file');}
+function dropBlockReason(){
+  if(!db)return 'The library is opening. Try again shortly.';
+  if(runtime||launching)return 'Return to the library to import a game.';
+  if(busy||$('#modal').open)return 'Finish or close the current dialog before importing a game.';
+  return '';
+}
+function showGameDrop(){
+  const blocked=dropBlockReason();
+  $('#game-drop-title').textContent=blocked?'Game import paused':'Drop a game file';
+  $('#game-drop-hint').textContent=blocked||'APK or ZIP · Imported only on this device';
+  $('#game-drop-target').hidden=false;
+}
+function clearGameDrop(){fileDragDepth=0;$('#game-drop-target').hidden=true;}
+document.addEventListener('dragenter',event=>{
+  if(!isFileDrag(event))return;
+  event.preventDefault();fileDragDepth++;showGameDrop();
+});
+document.addEventListener('dragover',event=>{
+  if(!isFileDrag(event))return;
+  event.preventDefault();event.dataTransfer.dropEffect=dropBlockReason()?'none':'copy';showGameDrop();
+});
+document.addEventListener('dragleave',event=>{
+  if($('#game-drop-target').hidden)return;
+  fileDragDepth=Math.max(0,fileDragDepth-1);
+  if(!fileDragDepth)clearGameDrop();
+});
+document.addEventListener('drop',event=>{
+  if(!isFileDrag(event)&&$('#game-drop-target').hidden)return;
+  event.preventDefault();clearGameDrop();
+  const reason=dropBlockReason();if(reason){notify(reason,true);return;}
+  const files=Array.from(event.dataTransfer?.files||[]);
+  if(files.length!==1){notify('Drop one APK or ZIP game file at a time.',true);return;}
+  if(!/\.(apk|zip)$/i.test(files[0].name)){notify('Choose an APK or ZIP game file.',true);return;}
+  importArchive(files[0]).catch(report);
+});
+document.addEventListener('dragend',clearGameDrop);
+window.addEventListener('blur',clearGameDrop);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')clearGameDrop();});
+
 async function launch(game,version,save) {
   if(launching)return;
   if(!version||version.removed)throw new Error('Import this game version again before playing it.');

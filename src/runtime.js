@@ -406,15 +406,22 @@ export function runtimeBootstrap(config, inspectChoices) {
     let model;
     try { model = inspectChoices(menu.scene, menu.startLine, menu.groups, menu.options); }
     catch (error) { warning('Could not inspect these choices: ' + error.message); return; }
-    const panel = document.createElement('section'); panel.className = 'pathos-choice-debug';
+    const panel = document.createElement('section'); panel.className = 'pathos-choice-debug'; panel.style.overflowWrap = 'anywhere';
     panel.setAttribute('aria-label', 'Choice debugger');
     // Scoped styles work with the game's font size and color scheme.
     const style = document.createElement('style');
-    style.textContent = '.pathos-choice-debug{border:1px solid currentColor;border-radius:6px;padding:16px;margin:16px 0;font:inherit;line-height:1.5}.pathos-choice-debug h2{font:inherit;font-weight:bold;margin:0 0 6px}.pathos-choice-debug p{margin:6px 0 12px}.pathos-choice-debug ul{list-style:none;padding:0;margin:0}.pathos-choice-debug li{border-top:1px solid currentColor;padding:12px 0}.pathos-choice-debug small{display:block;font:inherit;font-size:.85em;opacity:.85}.pathos-choice-debug code{display:block;white-space:pre-wrap;overflow-wrap:anywhere;font-size:.85em}.pathos-choice-debug button{display:block;width:auto;max-width:100%;padding:10px 14px;margin:10px 0 0;border:1px solid currentColor;border-radius:4px;background:transparent;color:inherit;font:inherit;line-height:1.4;cursor:pointer}.pathos-choice-debug button:disabled{opacity:.5}.pathos-choice-debug [data-availability="hidden"],.pathos-choice-debug [data-availability="disabled"]{border-left:3px solid currentColor;padding-left:12px}';
+    style.textContent = '.pathos-choice-debug{border:1px solid currentColor;border-radius:6px;padding:16px;margin:16px 0;font:inherit;line-height:1.5}.pathos-choice-debug h2{font:inherit;font-weight:bold;margin:0 0 6px}.pathos-choice-debug h3{font:inherit;font-size:.85em;font-weight:bold;margin:12px 0 4px}.pathos-choice-debug p{margin:6px 0 12px}.pathos-choice-debug ul{list-style:none;padding:0;margin:0}.pathos-choice-debug li{border-top:1px solid currentColor;padding:12px 0}.pathos-choice-debug small{display:block;font:inherit;font-size:.85em;opacity:.85}.pathos-choice-debug code{display:block;white-space:pre-wrap;overflow-wrap:anywhere;font-size:.85em}.pathos-choice-debug button{display:block;width:auto;max-width:100%;padding:10px 14px;margin:10px 0 0;border:1px solid currentColor;border-radius:4px;background:transparent;color:inherit;font:inherit;line-height:1.4;cursor:pointer}.pathos-choice-debug button:disabled{opacity:.5}.pathos-choice-debug [data-availability="hidden"],.pathos-choice-debug [data-availability="disabled"]{border-left:3px solid currentColor;padding-left:12px}';
     panel.appendChild(style);
     const heading = document.createElement('h2'); heading.textContent = 'Debug choices'; panel.appendChild(heading);
     const note = document.createElement('p'); note.textContent = 'Force-select bypasses choice conditions and may lead to invalid game state.'; panel.appendChild(note);
+    const previewNote = document.createElement('small'); previewNote.textContent = 'Effects preview uses current values without changing the game. It covers the option body until a jump or interaction; later, random, and scripted effects are not predicted.'; panel.appendChild(previewNote);
     const list = document.createElement('ul'); panel.appendChild(list);
+    function valueText(value) {
+      if (value === undefined) return 'unset';
+      const text = JSON.stringify(value);
+      return text.length > 160 ? text.slice(0, 157) + '…' : text;
+    }
+    function detail(row, tag, text) { const node = document.createElement(tag); node.textContent = text; row.appendChild(node); }
     function render(entries, path = []) {
       for (const entry of entries) {
         const names = [...path, entry.name];
@@ -424,11 +431,25 @@ export function runtimeBootstrap(config, inspectChoices) {
         const availability = document.createElement('small');
         availability.textContent = `${entry.availability === 'hidden' ? 'Hidden' : entry.availability === 'disabled' ? 'Disabled' : 'Available'} · line ${entry.option.line}`;
         row.appendChild(availability);
+        detail(row, 'h3', 'Checks');
+        if (!entry.conditions.length) detail(row, 'small', 'No additional eligibility checks.');
         for (const condition of entry.conditions) {
           const code = document.createElement('code');
           code.textContent = `${condition.kind === 'earlier branches' ? 'Earlier branches: ' : '*' + condition.kind + ' '}${condition.expression} → ${condition.result === null ? 'unknown' : condition.result}`;
           row.appendChild(code);
+          if (condition.values?.length) detail(row, 'small', condition.values.map(item => `${item.scope}.${item.name} = ${valueText(item.value)}`).join('; '));
         }
+        detail(row, 'h3', 'Selection effects');
+        for (const effect of entry.effects || []) {
+          if (effect.kind === 'set' || effect.kind === 'temp') {
+            const delta = typeof effect.before === 'number' && typeof effect.after === 'number' ? effect.after - effect.before : null;
+            const change = delta === null || delta === 0 ? '' : ` (${delta > 0 ? '+' : ''}${Number(delta.toPrecision(8))})`;
+            detail(row, 'code', `${effect.scope}.${effect.name}: ${valueText(effect.before)} → ${valueText(effect.after)}${change}`);
+            detail(row, 'small', `${effect.source} · line ${effect.line}`);
+          } else detail(row, 'code', `${effect.source} · line ${effect.line}`);
+        }
+        if (!entry.effects?.length && !entry.effectNotes?.length) detail(row, 'small', 'No direct variable changes in this option body.');
+        for (const text of entry.effectNotes || []) detail(row, 'small', text);
         const choose = document.createElement('button'), forced = entry.availability !== 'available';
         choose.type = 'button'; choose.textContent = forced ? 'Force-select' : 'Choose';
         choose.setAttribute('aria-label', `${forced ? 'Force-select' : 'Choose'} ${names.join(' / ')}`);

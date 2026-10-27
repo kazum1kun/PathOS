@@ -89,6 +89,76 @@ async function harness({ installed = [version()], saved = [], runtimeFactory, ar
   } };
 }
 
+function drag(document, type, { target = document, files = [], text = false } = {}) {
+  const event = new document.defaultView.Event(type, { bubbles: true, cancelable: true });
+  const transfer = { types: [text ? 'text/plain' : 'Files'], items: text ? [] : [{ kind: 'file' }], files, dropEffect: 'none' };
+  Object.defineProperty(event, 'dataTransfer', { value: transfer });
+  target.dispatchEvent(event);
+  return { event, transfer };
+}
+
+test('file drop target appears only during file drags and opens the normal import confirmation', async () => {
+  const h = await harness();
+  try {
+    const overlay = h.document.querySelector('#game-drop-target');
+    assert.equal(overlay.hidden, true);
+    assert.equal(drag(h.document, 'dragenter', { text: true }).event.defaultPrevented, false);
+    assert.equal(overlay.hidden, true, 'dragging text must not show the drop target');
+    drag(h.document, 'dragenter');
+    assert.equal(overlay.hidden, false);
+    drag(h.document, 'dragenter', { target: h.document.querySelector('#detail') });
+    drag(h.document, 'dragleave', { target: h.document.querySelector('#detail') });
+    assert.equal(overlay.hidden, false, 'moving between nested elements must not flicker');
+    const over = drag(h.document, 'dragover');
+    assert.equal(over.event.defaultPrevented, true);
+    assert.equal(over.transfer.dropEffect, 'copy');
+    drag(h.document, 'dragleave');
+    assert.equal(overlay.hidden, true);
+    drag(h.document, 'dragenter');
+    h.document.dispatchEvent(new h.document.defaultView.Event('dragend'));
+    assert.equal(overlay.hidden, true);
+    drag(h.document, 'dragenter');
+    h.document.defaultView.dispatchEvent(new h.document.defaultView.Event('blur'));
+    assert.equal(overlay.hidden, true);
+    const dropped = drag(h.document, 'drop', { files: [new File(['archive'], 'Story.APK')] });
+    assert.equal(dropped.event.defaultPrevented, true, 'file drops cannot navigate away');
+    assert.equal(overlay.hidden, true);
+    for (let attempt = 0; attempt < 50 && !h.document.querySelector('#confirm-import'); attempt++) await new Promise(resolve => setImmediate(resolve));
+    assert.ok(h.document.querySelector('#confirm-import'));
+    assert.equal(h.document.querySelector('#modal').open, true);
+    assert.equal((await h.vault.getAll('versions')).length, 1, 'import remains a reviewable action until confirmed');
+  } finally { await h.close(); }
+});
+
+test('invalid or blocked game drops leave existing library, dialog and active session intact', async () => {
+  const h = await harness();
+  try {
+    const overlay = h.document.querySelector('#game-drop-target'), notice = h.document.querySelector('#notice');
+    for (const files of [[], [new File(['x'], 'save.json')], [new File(['x'], 'one.zip'), new File(['x'], 'two.apk')]]) {
+      drag(h.document, 'dragenter'); drag(h.document, 'drop', { files });
+      assert.equal(overlay.hidden, true);
+      assert.match(notice.textContent, /APK or ZIP/);
+      assert.equal(h.document.querySelector('#confirm-import'), null);
+    }
+    h.document.querySelector('#settings').click();
+    drag(h.document, 'dragenter');
+    assert.match(h.document.querySelector('#game-drop-hint').textContent, /current dialog/);
+    assert.equal(drag(h.document, 'dragover').transfer.dropEffect, 'none');
+    drag(h.document, 'drop', { files: [new File(['x'], 'story.zip')] });
+    assert.ok(h.document.querySelector('#settings-save'));
+    assert.equal(h.document.querySelector('#modal').open, true);
+    h.document.querySelector('[data-close]').click();
+    await h.app.launch(game, version());
+    drag(h.document, 'dragenter');
+    assert.match(h.document.querySelector('#game-drop-hint').textContent, /Return to the library/);
+    drag(h.document, 'drop', { files: [new File(['x'], 'story.zip')] });
+    assert.equal(h.players[0].disposed, false);
+    assert.equal(h.players.length, 1);
+    assert.equal(h.document.querySelector('#confirm-import'), null);
+    assert.equal((await h.vault.getAll('versions')).length, 1);
+  } finally { await h.close(); }
+});
+
 test('app keeps storage-only changes and prevents old callbacks saving into another playthrough', async () => {
   const h = await harness();
   try {

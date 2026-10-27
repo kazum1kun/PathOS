@@ -13,6 +13,8 @@ python3 -m http.server 8000 --directory dist
 
 Open `http://localhost:8000`. For production, deploy `dist/` to a stable HTTPS address. Package inspection and gameplay happen entirely on the device, so there's no upload server to run. See [web deployment](docs/deployment.md).
 
+Drag one APK or ZIP onto the library to import it. A drop target appears only during a file drag, then opens the same review as **Import APK or ZIP**. Text/link drags are ignored. Return to the library and close any open dialog before dropping another game.
+
 On GitHub, run **Actions → Build web app → Run workflow** to download the built website or deploy it to Cloudflare Pages. See [GitHub Actions setup](docs/deployment.md#github-actions). The [Codemagic workflow](codemagic.yaml) is also available.
 
 ## Build the iOS app
@@ -46,7 +48,9 @@ Open a game's **Versions** tab and choose **Remove** to free an imported version
 
 ## Debug choices
 
-While playing, turn on **Debug choices** in the reader toolbar to inspect choice conditions and their true/false results. Hidden and disabled options appear with their conditions, including conditional branches and reuse restrictions. Use **Choose** for an available option or **Force-select** to bypass a hidden or disabled option's checks. Forcing a choice can put the story in an invalid state; it does not grant the stats or other requirements the condition checks.
+While playing, turn on **Debug choices** in the reader toolbar to inspect choice conditions, their true/false results, and the current variables they check. Hidden and disabled options appear with their conditions, including conditional branches and reuse restrictions. **Selection effects** previews direct variable changes, such as `strength: 10 → 15 (+5)`, and shows jumps/calls. It follows predictable branches on copies of the current variables. Preview stops at a jump, call, another interaction, randomness, scripts, or unsupported commands; later effects are explicitly left unknown. Games with generated options or no inspectable body may have no effect preview.
+
+Use **Choose** for an available option or **Force-select** to bypass a hidden or disabled option's checks. Forcing a choice can put the story in an invalid state; it does not grant the stats or other requirements the condition checks. Previewing does not change the live game state.
 
 The toggle updates the current choice controls without replaying the page or creating a save. It starts off when PathOS opens and keeps your preference for the current app session. The bundled demo includes hidden and disabled examples. Standard ChoiceScript choice menus are supported; unfamiliar syntax is reported, and conditions that cannot be evaluated show “unknown.”
 

@@ -290,3 +290,8 @@ dialog .settings-hint{font-family:var(--sans);font-size:13px;line-height:1.5;col
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 
 .storage-tip{border:1px solid var(--rule);border-radius:8px;padding:14px 18px;margin:0 0 20px}.storage-tip p{margin:5px 0 0}.storage-tip .text-button{font-size:inherit}
+.game-drop-target{position:fixed;inset:16px;z-index:100;display:grid;place-items:center;pointer-events:none;padding:24px;border:3px dashed var(--ribbon);border-radius:12px;background:var(--paper);color:var(--ink);box-shadow:0 0 0 100vmax rgb(0 0 0 / .45);text-align:center}
+.game-drop-target>div{max-width:480px}
+.game-drop-target h2{font-size:clamp(28px,6vw,44px);font-weight:normal;line-height:1.2;margin-bottom:12px}
+.game-drop-target p{font-family:var(--sans);font-size:16px;line-height:1.5;color:var(--ink-2)}
+.drop-symbol{display:block;font-size:64px;line-height:1.2;margin-bottom:16px;color:var(--ribbon)}

@@ -88,6 +88,96 @@ Done.`);
   assert.equal(inspectChoiceBlock(commented,0,[''],[{name:'Normal',line:6}]).options[0].name,'Hidden','comment indentation must not swallow option source');
 });
 
+function effectScene(source) {
+  const s = scene(source);
+  s.stats = { strength: 10, ready: false, label: 'before' };
+  s.temps.ready = true;
+  s.getVar = function(name) { return Object.hasOwn(this.temps, name) ? this.temps[name] : this.stats[name]; };
+  const expressions = {
+    'strength >= 50': function() { return this.getVar('strength') >= 50; },
+    'strength > 12': function() { return this.getVar('strength') > 12; },
+    'strength + 5': function() { return this.getVar('strength') + 5; },
+    'strength - 3': function() { return this.getVar('strength') - 3; },
+    'strength %+ 20': function() { const value = this.getVar('strength'); return Math.floor(value + (100 - value) * .2); },
+    'ready': function() { return this.getVar('ready'); },
+    'not ready': function() { return !this.getVar('ready'); },
+    'true': () => true, '7': () => 7, '"<b>after</b>"': () => '<b>after</b>',
+  };
+  s.evaluateExpr = function(expression) { if (!Object.hasOwn(expressions, expression)) throw new Error('Unknown expression'); return expressions[expression].call(this); };
+  return s;
+}
+
+test('effects preview tracks sequential changes, temp scope, fairmath and branches on independent copies', () => {
+  const s = effectScene(`*fake_choice
+  *if (strength >= 50) #Train
+    *set strength + 5
+    *if strength > 12
+      *set strength - 3
+    *elseif ready
+      *set strength 7
+    *else
+      *set strength 7
+    *set strength %+ 20
+    *temp ready not ready
+    *temp unused
+    *set label "<b>after</b>"
+    *goto_scene chapter2
+    *set strength 7
+  #Wait
+    *set strength + 5
+    *set ready not ready
+  #Read
+    Just some story text.
+Afterwards.`);
+  const before = JSON.stringify({ stats: s.stats, temps: s.temps, line: s.lineNum });
+  const result = inspectChoiceBlock(s, 0, [''], [rendered(s, 'Wait'), rendered(s, 'Read')]);
+  assert.deepEqual(result.options[0].conditions[0].values, [{ name: 'strength', scope: 'stats', value: 10 }]);
+  assert.deepEqual(result.options[0].effects.filter(item => item.kind !== 'flow').map(item => [item.scope, item.name, item.before, item.after]), [
+    ['stats', 'strength', 10, 15], ['stats', 'strength', 15, 12], ['stats', 'strength', 12, 29],
+    ['temps', 'ready', true, false], ['temps', 'unused', undefined, null], ['stats', 'label', 'before', '<b>after</b>'],
+  ]);
+  assert.equal(result.options[0].effects.at(-1).source, '*goto_scene chapter2');
+  assert.match(result.options[0].effectNotes.join(' '), /stops here/);
+  assert.deepEqual(result.options[1].effects.map(item => [item.name, item.before, item.after]), [['strength', 10, 15], ['ready', true, false]], 'each option starts from current state and temps take priority');
+  assert.deepEqual(result.options[2].effects, []);
+  assert.deepEqual(result.options[2].effectNotes, []);
+  assert.equal(JSON.stringify({ stats: s.stats, temps: s.temps, line: s.lineNum }), before);
+  assert.equal(s.lastIndentCheck, undefined);
+});
+
+test('effect prediction stops before unknown, random, scripted, input and called code', () => {
+  for (const command of ['*if unknown\n      *set strength 7', '*rand strength 1 100', '*script throw new Error("Must never execute")', '*input_number strength 1 100', '*gosub reward', '*set {dynamic} 7', '*set strength missing', '*unknown_effect']) {
+    const s = effectScene(`*choice\n  #Test\n    *set strength + 5\n    ${command}\n    *set strength - 3\n  #Other\n    *finish`);
+    s.script = () => assert.fail('Option commands must never execute');
+    const { options } = inspectChoiceBlock(s, 0, [''], [rendered(s, 'Test'), rendered(s, 'Other')]);
+    assert.deepEqual(options[0].effects.filter(item => item.kind === 'set').map(item => item.after), [15], command);
+    assert.ok(options[0].effectNotes.length, command);
+    assert.equal(s.stats.strength, 10);
+  }
+});
+
+test('effect preview follows only the selected branch and caps large bodies', () => {
+  const s = effectScene(`*choice
+  #Test
+    *if ready
+      *set strength 7
+    *elseif unknown
+      *script never()
+    *else
+      *script never()
+    *if not ready
+      *script never()
+    *else
+      *set label "<b>after</b>"
+  #Large
+${Array(250).fill('    *set strength + 5').join('\n')}`);
+  const { options } = inspectChoiceBlock(s, 0, [''], [rendered(s, 'Test'), rendered(s, 'Large')]);
+  assert.deepEqual(options[0].effects.map(item => item.after), [7, '<b>after</b>']);
+  assert.deepEqual(options[0].effectNotes, []);
+  assert.equal(options[1].effects.length, 40);
+  assert.match(options[1].effectNotes.join(' '), /limit reached/);
+});
+
 test('supplied APK parser and resolution support inspecting and forcing a hidden fake-choice branch', {skip:!process.env.PATHOS_APK_SCENE || !process.env.PATHOS_APK_HTML}, async()=>{
   const context=vm.createContext({console,printFooter(){}});
   vm.runInContext(await readFile(process.env.PATHOS_APK_HTML,'utf8'),context);

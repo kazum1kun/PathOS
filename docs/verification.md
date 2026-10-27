@@ -64,6 +64,14 @@ Hidden and disabled choices have an explicit Force-select button. Selection invo
 
 In Magikiras 1.0.9, the browser test progressed through radio choices, name inputs, text continuations, and combat menus. Debug mode exposed the normally hidden relationship choice guarded by `morgan = "crush"`, reported false, and successfully followed its story when forced. Toggling off restored the two original options. Saving and resuming the forced branch restored its story without runtime warnings or console errors. The updated demo also displayed and force-selected a disabled option. At a 375px viewport, the toolbar controls stayed within the page width. All 113 tests pass with both private-APK checks enabled. This is a browser smoke test of the shared runtime; iOS device checks still require a native build.
 
+## File drops and choice effect previews (2026-10-27)
+
+The library shows a temporary drop target for file drags, accepts one APK/ZIP, and routes it through the existing import review. DOM integration tests cover nested drag events, leaving/ending a drag, blur, ignored text drags, invalid and multiple files, and drops blocked by a dialog or active player. No import is written before confirmation.
+
+The debugger reports current checked values and previews direct `*set`/`*temp` changes on separate scene copies for each option. Tests cover sequential assignments, fairmath delegated to the engine evaluator, temporary-variable precedence, known/unknown conditional branches, jump/call/input boundaries, random/script/unsupported commands, and bounded inspection. Runtime DOM tests check literal rendering of game text, signed deltas, preview limitations, and unchanged live variables and position. Script commands are never executed by the preview.
+
+Browser smoke checks used local fixtures with the real app importer and shared isolated runtime, synthetic file-drag events, and a small test engine. Dropping the demo opened its import review; cancel retained the empty library. The dark debugger displayed check values and direct changes at desktop and 390px phone widths without horizontal overflow. This pass did not include an OS file-manager drag, a commercial APK, or native iOS device testing. The full suite passes 145 tests; three optional private-APK checks are skipped without their fixtures.
+
 Syntax checks, the final web build, native asset sync, and native metadata/export/storage bridge verification pass on Windows. The shared runtime and choice inspector are bundled into the iOS project; Swift compilation and device checks require macOS/Xcode.
 
 ## Autosave history (2026-10-17)
