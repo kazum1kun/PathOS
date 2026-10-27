@@ -119,6 +119,25 @@ test('native startup failure never falls back to browser storage', async () => {
   legacy.close();
 });
 
+test('native settings and autosave trimming commit atomically and turning autosave off retains history', async () => {
+  const { options, legacy } = await legacyLibrary(), boundary = nativeBoundary();
+  const vault = await openVault({ ...options, nativeStorage: boundary.bridge });
+  try {
+    for (let i = 0; i < 4; i++) await vault.putSave({ ...save, id: `auto-${i}`, kind: 'auto', createdAt: new Date(Date.UTC(2026, 9, 16, 0, i)).toISOString() });
+    boundary.fail = request => request.operation === 'delete' && request.store === 'saves';
+    await assert.rejects(vault.saveSettings({ theme: 'dark', autosaveLimit: 2 }), /disk failure/);
+    boundary.fail = null;
+    assert.equal((await vault.getSettings()).autosaveLimit, 20);
+    assert.equal((await vault.getAll('saves')).length, 5);
+    await vault.saveSettings({ theme: 'dark', autosaveLimit: 2 });
+    assert.equal((await vault.getAll('saves')).length, 3);
+    await vault.saveSettings({ autosaveLimit: 0 });
+    await vault.putSave({ ...save, id: 'off-auto', kind: 'auto' });
+    assert.equal(await vault.get('saves', 'off-auto'), undefined);
+    assert.deepEqual(await vault.get('saves', save.id), save);
+  } finally { vault.close(); legacy.close(); }
+});
+
 test('native batch deletion rolls back all selected snapshots on a write failure', async () => {
   const {options,legacy}=await legacyLibrary(),boundary=nativeBoundary();
   const vault=await openVault({...options,nativeStorage:boundary.bridge});

@@ -54,11 +54,19 @@ The toggle updates the current choice controls without replaying the page or cre
 
 On phones and smaller tablets, **Menu** contains game/save import, backup export and restore, device storage, and Help. **Import save** also stays visible in the selected game's Saves tab. While playing, open **Tools** for save status, **Save snapshot**, and **Debug choices**. Save-row actions use larger tap targets in a two-column layout.
 
-Export a compressed ZIP backup of your library to move games and saves between a browser and the iOS app. Backups store game files as compressed binary data and share identical files across versions. Individual save exports are compressed ZIP files too. Saves keep progress, chapter checkpoints, in-game save slots, and preferences without repeating chapter source or regenerable engine caches; existing stored saves are compacted when the app opens. PathOS keeps the 20 most recent automatic saves for each installed version, and keeps manual and edited saves separately. Editing a save always creates a copy. You can also import raw ChoiceScript saves and save bundles from the DinoKnights editor by choosing the installed version they came from. The browser and the iOS app have separate storage, and this release has no cloud sync.
+Export a compressed ZIP backup of your library to move games and saves between a browser and the iOS app. Backups store game files as compressed binary data and share identical files across versions. Individual save exports are compressed ZIP files too. Saves keep progress, chapter checkpoints, in-game save slots, and preferences without repeating chapter source or regenerable engine caches; existing stored saves are compacted when the app opens. PathOS keeps the 20 most recent automatic saves for each installed version by default; change the limit in Settings. Manual and edited saves are kept separately. Editing a save always creates a copy. You can also import raw ChoiceScript saves and save bundles from the DinoKnights editor by choosing the installed version they came from. The browser and the iOS app have separate storage, and this release has no cloud sync.
 
 Autosaves record choices, character input, and changes to game state or in-game save slots. Plain “Next” continuations that only move through text do not add snapshots. Opening an existing save, viewing stats, or repeated engine cache writes also do not add duplicates. New snapshots include a short story preview; save rows show the scene, line position, and timestamp to the second.
 
 Choose **Select saves** to select individual snapshots or **Select all saves**, then **Delete selected**. The confirmation lists the chosen snapshots before deleting them together. Saves from other games and installed game versions stay intact.
+
+## Settings
+
+Open **Settings** from the library menu or the reader's **Tools**. Choose a light or dark theme, or follow the device. Reader controls set the font, font size, line spacing, and reading width inside imported games; changes apply without restarting the game. **Use the game's original appearance** restores its own styling. A reduced-motion option applies throughout PathOS and the reader.
+
+The autosave limit is per game version, from 0 to 100. **0 turns off new autosaves**, including on exit or backgrounding, while preserving existing snapshots. Manual **Save snapshot** remains available. Lowering a positive limit immediately trims older automatic snapshots; named and edited saves are retained. Enable **Also autosave text-only Next pages** to save those continuations as well as choices and state changes.
+
+Settings persist in the library's browser or native storage and are included in full backups. A restored backup supplies settings to a new library; existing local settings take precedence when merging into a library that already has preferences.
 
 ## Development
 

@@ -5,6 +5,7 @@ import { createRuntime } from './runtime.js';
 import { createDemoArchive } from './demo.js';
 import { prepareLegacySaves } from './save-import.js';
 import { encodeSave, readSaveFile } from './transfer.js';
+import { DEFAULT_SETTINGS, READER_FONTS, normalizeSettings, resolvedTheme, readerStyles } from './settings.js';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -20,6 +21,8 @@ let db, games = [], versions = [], saves = [], selected = null, tab = 'saves';
 let runtime = null, session = null, storage = {}, saveQueue = Promise.resolve(), autoTimer, busy = false, launching = false;
 let selectingSaves = false, selectionGame = null;
 let debugChoices = false;
+let settings = { ...DEFAULT_SETTINGS };
+const systemTheme = window.matchMedia?.('(prefers-color-scheme: dark)');
 const selectedSaves = new Set();
 const emptyDetail = $('#detail').innerHTML;
 
@@ -47,6 +50,51 @@ function modal(html,init) {
   $('#modal-body').querySelectorAll('[data-close]').forEach(el=>el.onclick=()=>$('#modal').close());
 }
 function button(action,label,extra='') { return `<button data-action="${action}" ${extra}>${label}</button>`; }
+function currentReaderStyles(){return readerStyles(settings,systemTheme?.matches||false);}
+async function applySettings(){
+  document.documentElement.dataset.theme=settings.theme;
+  document.documentElement.dataset.reduceMotion=String(settings.reduceMotion);
+  const dark=resolvedTheme(settings,systemTheme?.matches||false)==='dark';
+  document.querySelectorAll('meta[name="theme-color"]').forEach(meta=>meta.content=dark?'#1a1814':'#f4efe4');
+  if(!settings.autosaveLimit){clearTimeout(autoTimer);if(session)$('#save-status').textContent='Autosave off';}
+  await runtime?.setAppearance?.(currentReaderStyles());
+}
+function openSettings(){
+  const options=entries=>entries.map(([value,label])=>`<option value="${value}">${label}</option>`).join('');
+  modal(`<h2>Settings</h2><p>Saved on this device. Reader changes apply to the open game without restarting it.</p>
+    <fieldset class="settings-section"><legend>Appearance</legend><div class="form-row"><label for="settings-theme">Color theme</label><select id="settings-theme">${options([['system','Follow device'],['light','Light'],['dark','Dark']])}</select></div><label class="settings-check"><input id="settings-reduceMotion" type="checkbox">Reduce motion</label></fieldset>
+    <fieldset class="settings-section"><legend>Reader</legend><label class="settings-check"><input id="settings-useGameAppearance" type="checkbox">Use the game’s original appearance</label><p class="settings-hint">Turn this off to use PathOS fonts and colors inside games.</p><div class="settings-grid">
+    <div class="form-row"><label for="settings-fontFamily">Font</label><select id="settings-fontFamily">${options([['serif','Book serif'],['sans','System sans serif'],['mono','Monospace']])}</select></div>
+    <div class="form-row"><label for="settings-fontSize">Font size (px)</label><input id="settings-fontSize" type="number" min="14" max="32" step="1"></div>
+    <div class="form-row"><label for="settings-lineHeight">Line spacing</label><input id="settings-lineHeight" type="number" min="1.2" max="2.2" step="0.05"></div>
+    <div class="form-row"><label for="settings-readerWidth">Reading width</label><select id="settings-readerWidth">${options([['narrow','Narrow'],['comfortable','Comfortable'],['wide','Wide'],['full','Full width']])}</select></div></div>
+    <div id="settings-preview" class="settings-preview" aria-label="Reader preview">You reach a lighthouse as the last light leaves the sea.</div></fieldset>
+    <fieldset class="settings-section"><legend>Automatic saves</legend><div class="form-row"><label for="settings-autosaveLimit">Snapshots to keep per version</label><input id="settings-autosaveLimit" type="number" min="0" max="100" step="1" aria-describedby="settings-autosave-hint"></div><p id="settings-autosave-hint" class="settings-hint">0 stops new autosaves and keeps existing snapshots. Lowering a positive limit removes older autosaves. Named snapshots are kept until you delete them.</p><label class="settings-check"><input id="settings-saveContinuations" type="checkbox">Also autosave text-only “Next” pages</label></fieldset>
+    <div class="modal-error" id="settings-error" role="alert"></div><div class="modal-actions"><button id="settings-reset">Reset defaults</button><button data-close>Cancel</button><button id="settings-save" class="primary">Save settings</button></div>`,()=>{
+    const controls=Object.fromEntries(Object.keys(DEFAULT_SETTINGS).map(key=>[key,$('#settings-'+key)]));
+    function read(){return Object.fromEntries(Object.entries(controls).map(([key,control])=>[key,control.type==='checkbox'?control.checked:['autosaveLimit','fontSize','lineHeight'].includes(key)?control.value.trim()===''?NaN:Number(control.value):control.value]));}
+    function preview(){
+      const draft=normalizeSettings(read()),sample=$('#settings-preview'),dark=resolvedTheme(draft,systemTheme?.matches||false)==='dark';
+      for(const key of ['fontFamily','fontSize','lineHeight','readerWidth'])controls[key].disabled=draft.useGameAppearance;
+      sample.hidden=draft.useGameAppearance;
+      Object.assign(sample.style,{fontFamily:READER_FONTS[draft.fontFamily],fontSize:draft.fontSize+'px',lineHeight:String(draft.lineHeight),backgroundColor:dark?'#1a1814':'#fbf8f1',color:dark?'#ebe4d5':'#1e1b16'});
+      controls.saveContinuations.disabled=draft.autosaveLimit===0;
+    }
+    function fill(value){for(const [key,control] of Object.entries(controls)){
+      if(control.type==='checkbox')control.checked=value[key];
+      else if(control.tagName==='SELECT')control.querySelectorAll('option').forEach(option=>option.selected=option.value===value[key]);
+      else control.value=String(value[key]);
+    }preview();}
+    fill(settings);
+    for(const control of Object.values(controls)){control.oninput=preview;control.onchange=preview;}
+    $('#settings-reset').onclick=()=>fill(DEFAULT_SETTINGS);
+    $('#settings-save').onclick=async()=>{
+      const save=$('#settings-save'),error=$('#settings-error');save.disabled=true;error.textContent='';
+      try{const draft=normalizeSettings(read(),true);settings=await db.saveSettings(draft);await applySettings();await refresh();$('#modal').close();notify('Settings saved.');}
+      catch(e){error.textContent=e.message;save.disabled=false;}
+    };
+  });
+}
 async function refresh() {
   [games,versions,saves]=await Promise.all(['games','versions','saves'].map(x=>db.getAll(x)));
   games.sort((a,b)=>a.title.localeCompare(b.title));
@@ -206,13 +254,13 @@ async function launch(game,version,save) {
     $('#player').hidden=false;$('#playing-title').textContent=game.title;$('#playing-version').textContent=version.label;$('#save-status').textContent='Opening…';$('#runtime-status').hidden=true;$('#save-now').disabled=true;
     $('#debug-choices').disabled=true;$('#debug-choices').setAttribute('aria-pressed',String(debugChoices));
     document.body.style.overflow='hidden';
-    runtime=await createRuntime({container:$('#runtime'),version,storage,state:save?.snapshot,debugMode:debugChoices,
-      onStorage:value=>{if(session!==current)return;const changed=JSON.stringify(storage)!==JSON.stringify(value);storage=value;if(changed&&current.latestSnapshot){clearTimeout(autoTimer);autoTimer=setTimeout(()=>{if(session===current)enqueueSave(current.latestSnapshot,'auto').catch(report);},650);}},
-      onSnapshot:snapshot=>{if(session!==current)return;current.latestSnapshot=snapshot;clearTimeout(autoTimer);autoTimer=setTimeout(()=>{if(session===current)enqueueSave(snapshot,'auto').catch(report);},650);},
+    runtime=await createRuntime({container:$('#runtime'),version,storage,state:save?.snapshot,debugMode:debugChoices,appearanceCSS:currentReaderStyles(),
+      onStorage:value=>{if(session!==current)return;const changed=JSON.stringify(storage)!==JSON.stringify(value);storage=value;if(changed&&current.latestSnapshot)scheduleAutosave(current,current.latestSnapshot);},
+      onSnapshot:snapshot=>{if(session!==current)return;current.latestSnapshot=snapshot;scheduleAutosave(current,snapshot);},
       onStatus:status=>{
         if(session!==current)return;
         if(status.level==='error'){$('#runtime-status').textContent=status.message;$('#runtime-status').hidden=false;$('#save-status').textContent='Runtime needs attention';}
-        if(status.level==='ready'){$('#save-now').disabled=false;$('#debug-choices').disabled=false;$('#save-status').textContent='Autosave ready';}
+        if(status.level==='ready'){$('#save-now').disabled=false;$('#debug-choices').disabled=false;$('#save-status').textContent=settings.autosaveLimit?'Autosave ready':'Autosave off';}
       }
     });
   }catch(error){await leavePlayer(false);throw error;}
@@ -231,17 +279,23 @@ function saveFingerprint(snapshot,values={},ignorePosition=false) {
   // time, previews and recovery checkpoints doesn't constitute new progress.
   return JSON.stringify({state,storage:meaningfulStorage},(_,value)=>value&&typeof value==='object'&&!Array.isArray(value)?Object.fromEntries(Object.keys(value).sort().map(key=>[key,value[key]])):value);
 }
+function scheduleAutosave(current,snapshot){
+  clearTimeout(autoTimer);
+  if(settings.autosaveLimit>0)autoTimer=setTimeout(()=>{if(session===current)enqueueSave(snapshot,'auto').catch(report);},650);
+}
 function enqueueSave(snapshot,kind='auto',name) {
   const current=session;if(!current)return Promise.resolve();
+  if(kind==='auto'&&settings.autosaveLimit===0)return Promise.resolve();
   const savedStorage=copy(storage);
   saveQueue=saveQueue.catch(()=>{}).then(async()=>{
+    if(kind==='auto'&&settings.autosaveLimit===0)return;
     if(!snapshot?.state||!snapshot?.scene?.name)throw new Error('This game has no restorable state yet.');
     const fingerprint=saveFingerprint(snapshot,savedStorage);
     const changeFingerprint=saveFingerprint(snapshot,savedStorage,true);
     if(kind==='auto'&&fingerprint===current.lastFingerprint)return;
-    if(kind==='auto'&&snapshot.transition==='continue'&&changeFingerprint===current.lastChangeFingerprint)return;
+    if(kind==='auto'&&!settings.saveContinuations&&snapshot.transition==='continue'&&changeFingerprint===current.lastChangeFingerprint)return;
     const record={id:uid(),gameId:current.game.id,versionId:current.version.id,name:name||`Autosave · ${snapshot.scene.name}`,kind,createdAt:new Date().toISOString(),runId:current.runId,snapshot:copy(snapshot),storage:savedStorage};
-    await db.putSave(record);
+    if(!await db.putSave(record))return;
     current.lastFingerprint=fingerprint;
     current.lastChangeFingerprint=changeFingerprint;
     if(session===current)$('#save-status').textContent=`Saved ${new Date().toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})}`;
@@ -250,7 +304,7 @@ function enqueueSave(snapshot,kind='auto',name) {
 }
 async function flush() {
   clearTimeout(autoTimer);
-  if(runtime&&session){const snapshot=await runtime.capture();await enqueueSave(snapshot,'auto');}
+  if(runtime&&session&&settings.autosaveLimit>0){const snapshot=await runtime.capture();await enqueueSave(snapshot,'auto');}
   await saveQueue;
 }
 async function leavePlayer(capture=true) {
@@ -354,10 +408,11 @@ $('#backup').onclick=async()=>{try{if(runtime)await flush();notify('Compressing 
 $('#restore-backup').onclick=()=>$('#backup-file').click();
 $('#backup-file').onchange=async event=>{const file=event.target.files[0];event.target.value='';if(!file)return;try{
   const backup=await decodeBackup(file);
-  modal(`<h2>Restore a library backup</h2><p>This adds ${esc(backup.games.length)} games and ${esc(backup.saves.length)} saves to the library on this device. PathOS checks for conflicts before changing anything.</p><div class="modal-error" id="restore-error"></div><div class="modal-actions"><button data-close>Cancel</button><button id="restore-confirm" class="primary">Restore backup</button></div>`,()=>{$('#restore-confirm').onclick=async()=>{try{$('#restore-confirm').disabled=true;await db.restoreRecords(backup);$('#modal').close();await refresh();notify('Backup restored. Games and saves are available on this device.');}catch(e){$('#restore-error').textContent=e.message;$('#restore-confirm').disabled=false;}};});
+  modal(`<h2>Restore a library backup</h2><p>This adds ${esc(backup.games.length)} games and ${esc(backup.saves.length)} saves to the library on this device. PathOS checks for conflicts before changing anything.</p><div class="modal-error" id="restore-error"></div><div class="modal-actions"><button data-close>Cancel</button><button id="restore-confirm" class="primary">Restore backup</button></div>`,()=>{$('#restore-confirm').onclick=async()=>{try{$('#restore-confirm').disabled=true;await db.restoreRecords(backup);settings=await db.getSettings();await applySettings();$('#modal').close();await refresh();notify('Backup restored. Games and saves are available on this device.');}catch(e){$('#restore-error').textContent=e.message;$('#restore-confirm').disabled=false;}};});
 }catch(e){report(e);}};
 $('#search').oninput=render;$('#help').onclick=help;$('#save-now').onclick=manualSave;
 $('#debug-choices').onclick=toggleChoiceDebug;
+$('#settings').onclick=openSettings;$('#reader-settings').onclick=openSettings;
 for(const [triggerId,panelId] of disclosures)$('#'+triggerId).onclick=()=>toggleMenu(triggerId,panelId);
 $('#main-menu').addEventListener('click',event=>{
   const button=event.target.closest('button');if(!button||button.disabled)return;
@@ -377,4 +432,5 @@ document.addEventListener('visibilitychange',()=>{if(document.visibilityState===
 document.addEventListener('vault-native-pause',()=>flush().catch(report).finally(()=>window.VaultNative?.storage?.({operation:'backgroundSaveFinished'}).catch(report)));
 window.addEventListener('pagehide',()=>{flush().catch(()=>{});});
 
-try{db=await openVault();await db.compactSaves();setupStorageHelp();await refresh();if('serviceWorker' in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').catch(error=>console.warn('Offline shell unavailable',error));}catch(error){report(error);$('#import').disabled=true;}
+systemTheme?.addEventListener?.('change',()=>applySettings().catch(report));
+try{db=await openVault();settings=await db.getSettings();await applySettings();await db.compactSaves();setupStorageHelp();await refresh();if('serviceWorker' in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').catch(error=>console.warn('Offline shell unavailable',error));}catch(error){report(error);$('#import').disabled=true;}

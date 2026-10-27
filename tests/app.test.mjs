@@ -7,6 +7,7 @@ import * as storageModule from '../src/storage.js';
 import * as compatibilityModule from '../src/compatibility.js';
 import { prepareLegacySaves } from '../src/save-import.js';
 import { encodeSave, readSaveFile } from '../src/transfer.js';
+import * as settingsModule from '../src/settings.js';
 
 const root = new URL('../', import.meta.url);
 const now = '2026-10-16T12:00:00.000Z';
@@ -34,7 +35,7 @@ async function clickAndWait(element, completed) {
 
 // Exercise the real app handlers and persistence with a DOM implementation. The
 // runtime is a controlled boundary: engine/VFS behavior has separate VM tests.
-async function harness({ installed = [version()], saved = [], runtimeFactory, archiveCandidate = version(), navigatorOverrides = {}, native = false } = {}) {
+async function harness({ installed = [version()], saved = [], runtimeFactory, archiveCandidate = version(), navigatorOverrides = {}, native = false, settings } = {}) {
   const { window, document } = parseHTML(await readFile(new URL('public/index.html', root), 'utf8'));
   const previous = new Map();
   for (const [key, value] of Object.entries({ window, document, navigator: { storage: { persist: async () => true }, ...navigatorOverrides }, location: { protocol: 'https:' } })) {
@@ -48,6 +49,7 @@ async function harness({ installed = [version()], saved = [], runtimeFactory, ar
   if (native) { vault.storageKind = 'native'; vault.storageInfo = async () => ({ usage: 1024, available: 4096 }); }
   for (const item of installed) await vault.importVersion({ ...game, activeVersionId: item.id }, item);
   for (const item of saved) await vault.putSave(item);
+  if(settings)await vault.saveSettings(settings);
   const players = [];
   const createRuntime = async options => {
     if (runtimeFactory) return runtimeFactory(options, players);
@@ -55,6 +57,7 @@ async function harness({ installed = [version()], saved = [], runtimeFactory, ar
       options, state: structuredClone(options.state || snapshot()), values: structuredClone(options.storage), disposed: false,
       capture: async () => { options.onStorage(structuredClone(player.values)); return structuredClone(player.state); },
       setDebugMode: async enabled => { player.debugMode=enabled; return {enabled}; },
+      setAppearance: async css => { player.appearanceCSS=css; return {applied:true}; },
       dispose: () => { player.disposed = true; },
     };
     players.push(player);
@@ -69,6 +72,7 @@ async function harness({ installed = [version()], saved = [], runtimeFactory, ar
     encodeSave, readSaveFile,
     validateRecord: storageModule.validateRecord,
     ...compatibilityModule,
+    ...settingsModule,
     prepareLegacySaves,
     createRuntime,
     createDemoArchive: async () => new File(['demo'], 'demo.zip'),
@@ -125,6 +129,69 @@ test('choice debug toggle controls the active runtime without adding saves and k
     assert.equal(button.disabled,false);
     assert.equal(button.getAttribute('aria-pressed'),'true','a failed toggle retains the last working mode');
   }finally{await h.close();}
+});
+
+test('settings preview cancels cleanly and saved appearance updates the active game without changing its progress', async () => {
+  const original = save(), h = await harness({ saved: [original] });
+  try {
+    await h.app.handleAction('resume', original.id);
+    h.document.querySelector('#reader-settings').click();
+    h.document.querySelector('#settings-fontSize').value = '24';
+    h.document.querySelector('#settings-fontSize').oninput();
+    assert.equal(h.document.querySelector('#settings-preview').style.fontSize, '24px');
+    h.document.querySelector('[data-close]').click();
+    assert.equal((await h.vault.getSettings()).fontSize, 18);
+    h.document.querySelector('#reader-settings').click();
+    h.document.querySelector('#settings-autosaveLimit').value = '';
+    await h.document.querySelector('#settings-save').onclick();
+    assert.match(h.document.querySelector('#settings-error').textContent, /autosave limit/);
+    assert.equal((await h.vault.getSettings()).autosaveLimit, 20);
+    h.document.querySelector('#settings-fontSize').value = '24';
+    h.document.querySelector('#settings-theme option[value="dark"]').selected = true;
+    h.document.querySelector('#settings-autosaveLimit').value = '0';
+    h.document.querySelector('#settings-reduceMotion').checked = true;
+    await h.document.querySelector('#settings-save').onclick();
+    assert.equal(h.document.querySelector('#settings-error')?.textContent || '', '');
+    assert.equal(h.document.documentElement.dataset.theme, 'dark');
+    assert.equal((await h.vault.getSettings()).fontSize, 24);
+    assert.match(h.players[0].appearanceCSS, /font-size:24px/);
+    assert.equal(h.players.length, 1, 'changing settings must not recreate the game');
+    assert.deepEqual(await h.vault.getAll('saves'), [original]);
+    assert.equal(h.document.querySelector('#save-status').textContent, 'Autosave off');
+    h.document.querySelector('#settings').click();
+    h.document.querySelector('#settings-reset').click();
+    assert.equal(h.document.querySelector('#settings-fontSize').value, '18');
+    assert.equal(h.document.querySelector('#settings-autosaveLimit').value, '20');
+  } finally { await h.close(); }
+});
+
+test('autosave off skips capture on exit/background while manual snapshots still work', async () => {
+  const h = await harness({ settings: { autosaveLimit: 0 } });
+  try {
+    await h.app.launch(game, version());
+    const player = h.players[0]; let captures = 0;
+    player.capture = async () => { captures++; return snapshot(); };
+    player.options.onSnapshot(snapshot());
+    await h.app.flush();
+    assert.equal(captures, 0);
+    assert.equal((await h.vault.getAll('saves')).length, 0);
+    h.document.querySelector('#save-now').click();
+    await h.document.querySelector('#save-confirm').onclick();
+    assert.equal(captures, 1);
+    assert.equal((await h.vault.getAll('saves'))[0].kind, 'manual');
+    await h.app.leavePlayer();
+    assert.equal(captures, 1);
+  } finally { await h.close(); }
+});
+
+test('text-only continuation autosaves can be enabled explicitly', async () => {
+  const original = { ...save(), kind: 'auto' }, h = await harness({ saved: [original], settings: { saveContinuations: true } });
+  try {
+    await h.app.handleAction('resume', original.id);
+    h.players[0].state.transition = 'continue'; h.players[0].state.state.lineNum++;
+    await h.app.flush();
+    assert.equal((await h.vault.getAll('saves')).length, 2);
+  } finally { await h.close(); }
 });
 
 test('library menu opens existing import/restore controls, follows the selected game and closes on Escape or outside click', async()=>{

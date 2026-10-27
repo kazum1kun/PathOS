@@ -71,7 +71,7 @@ function base64(bytes) {
 function safeJSON(value) { return JSON.stringify(value).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'); }
 
 /** Exported so security and VFS construction can be tested without a browser. */
-export async function prepareRuntimeDocument(version, { token, storage = {}, state = null, debugMode = false } = {}) {
+export async function prepareRuntimeDocument(version, { token, storage = {}, state = null, debugMode = false, appearanceCSS = '' } = {}) {
   if (!version?.files?.length || !version.entryPath) throw new Error('The selected version has no playable entry page.');
   const files = Object.create(null), urls = Object.create(null), ownedURLs = [];
   for (const file of version.files) {
@@ -119,7 +119,7 @@ export async function prepareRuntimeDocument(version, { token, storage = {}, sta
   // Older imports predate archiveFormat. Retain their APK compatibility without
   // requiring re-import; a recorded ZIP format takes precedence over filenames.
   const apkContent = version.archiveFormat ? version.archiveFormat === 'apk' : !!version.packageName || /\.apk$/i.test(version.filename || '');
-  const config = { token: token || crypto.randomUUID(), storage, state, debugMode, apkContent, entryPath, files: virtual, storeName: version.storeName || version.metadata?.storeName || null };
+  const config = { token: token || crypto.randomUUID(), storage, state, debugMode, appearanceCSS, apkContent, entryPath, files: virtual, storeName: version.storeName || version.metadata?.storeName || null };
   const bootstrap = `<meta http-equiv="Content-Security-Policy" content="${GAME_CSP}"><script>(${runtimeBootstrap.toString()})(${safeJSON(config)}, ${inspectChoiceBlock.toString()});<\/script>`;
   let html = rewriteGameHTML(new TextDecoder().decode(files[entryPath].bytes), resolve);
   // A malformed export can contain executable tokens before its explicit head.
@@ -150,6 +150,18 @@ export function runtimeBootstrap(config, inspectChoices) {
   const warning = message => { if (!seenWarnings.has(message)) { seenWarnings.add(message); post('status', { level: 'error', message }); } };
   const status = (level, message) => post('status', { level, message });
   const clone = value => JSON.parse(JSON.stringify(value));
+  let appearanceStyle = null, appearanceCSS = config.appearanceCSS || '';
+  function applyAppearance(css = appearanceCSS) {
+    if (typeof css !== 'string' || css.length > 50000) throw new Error('Reader appearance settings are invalid.');
+    appearanceCSS = css;
+    if ((!css && !appearanceStyle) || !document.createElement) return;
+    const head = document.head || document.documentElement;
+    if (!head) return;
+    if (!appearanceStyle) { appearanceStyle = document.createElement('style'); appearanceStyle.id = 'pathos-reader-settings'; }
+    if (appearanceStyle.textContent !== css) appearanceStyle.textContent = css;
+    if (head.lastElementChild !== appearanceStyle) head.appendChild(appearanceStyle);
+  }
+  applyAppearance();
   const changed = () => {
     clearTimeout(storageTimer);
     storageTimer = setTimeout(() => post('storage', clone(values)), 120);
@@ -552,10 +564,11 @@ export function runtimeBootstrap(config, inspectChoices) {
       return result;
     };
   }
-  Object.defineProperty(window, '__pathosFinishLoading', { value() { hookEngine(); repairAssets(document); } });
+  Object.defineProperty(window, '__pathosFinishLoading', { value() { hookEngine(); repairAssets(document); applyAppearance(); } });
   const hookTimer = setInterval(hookEngine, 20);
   setTimeout(() => { clearInterval(hookTimer); if (!ready) warning('This game never reached a ChoiceScript page that PathOS can save. It may need missing files or native Android features.'); }, 30000);
-  document.addEventListener('DOMContentLoaded', () => { hookEngine(); repairAssets(document); });
+  document.addEventListener('DOMContentLoaded', () => { hookEngine(); repairAssets(document); applyAppearance(); });
+  if (document.head) new MutationObserver(() => applyAppearance()).observe(document.head, { childList: true });
   new MutationObserver(() => repairAssets(document)).observe(document, { subtree: true, childList: true });
   document.addEventListener('click', event => {
     const link = event.target.closest?.('a[href]');
@@ -589,6 +602,9 @@ export function runtimeBootstrap(config, inspectChoices) {
     try {
       if (message.type === 'capture') {
         post('storage', clone(values)); post('result', { snapshot: snapshot(), storage: clone(values) }, message.id);
+      } else if (message.type === 'appearance') {
+        applyAppearance(message.payload?.css);
+        post('result', { applied: true }, message.id);
       } else if (message.type === 'debug') {
         if (typeof inspectChoices !== 'function' || typeof window.Scene?.prototype.choice !== 'function' || typeof window.Scene?.prototype.renderOptions !== 'function') throw new Error('Choice debugging is unavailable for this game engine.');
         debugMode = !!message.payload?.enabled;
@@ -609,9 +625,9 @@ export function runtimeBootstrap(config, inspectChoices) {
   status('info', 'Loading bundled game assets.');
 }
 
-export async function createRuntime({ container, version, storage = {}, state = null, debugMode = false, onSnapshot = () => {}, onStorage = () => {}, onStatus = () => {} }) {
+export async function createRuntime({ container, version, storage = {}, state = null, debugMode = false, appearanceCSS = '', onSnapshot = () => {}, onStorage = () => {}, onStatus = () => {} }) {
   if (!container) throw new Error('A player container is required.');
-  const prepared = await prepareRuntimeDocument(version, { storage, state, debugMode });
+  const prepared = await prepareRuntimeDocument(version, { storage, state, debugMode, appearanceCSS });
   const iframe = document.createElement('iframe');
   iframe.className = 'game-frame'; iframe.title = version.title || 'ChoiceScript game';
   // ChoiceScript's text/number inputs use local submit handlers. allow-forms
@@ -647,6 +663,7 @@ export async function createRuntime({ container, version, storage = {}, state = 
     async capture() { const result = await request('capture'); latestStorage = result.storage; onStorage(result.storage); return result.snapshot; },
     restore(value) { return request('restore', value); },
     setDebugMode(enabled) { return request('debug', { enabled: !!enabled }); },
+    setAppearance(css) { return request('appearance', { css }); },
     getStorage() { return { ...latestStorage }; },
     dispose() { disposed = true; window.removeEventListener('message', listener); iframe.remove(); prepared.dispose();
       for (const task of waiting.values()) { clearTimeout(task.timer); task.reject(new Error('The player was closed.')); } waiting.clear(); }

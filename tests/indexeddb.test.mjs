@@ -153,6 +153,32 @@ test('only automatic snapshots are trimmed, independently for each installed ver
   vault.close();
 });
 
+test('saved settings persist and enforce per-version autosave limits without deleting manual saves', async () => {
+  const indexedDB = new IDBFactory(), name = 'settings-library';
+  let vault = await openVault({ indexedDB, name });
+  const { game, version, save } = fixture();
+  await vault.importVersion(game, version);
+  await vault.importVersion({ ...game, activeVersionId: 'v2' }, { ...version, id: 'v2', contentHash: 'two' });
+  await vault.putSave(save);
+  for (const versionId of ['v1', 'v2']) for (let i = 0; i < 5; i++) await vault.putSave({ ...save, id: `${versionId}-${i}`, versionId, kind: 'auto', createdAt: new Date(Date.UTC(2026, 9, 16, 0, i)).toISOString() });
+  await vault.saveSettings({ theme: 'dark', fontSize: 24, autosaveLimit: 2 });
+  for (const versionId of ['v1', 'v2']) assert.deepEqual((await vault.getAll('saves', 'versionId', versionId)).filter(save => save.kind === 'auto').map(save => save.id).sort(), [`${versionId}-3`, `${versionId}-4`]);
+  assert.deepEqual(await vault.get('saves', save.id), save);
+  vault.close(); vault = await openVault({ indexedDB, name });
+  assert.equal((await vault.getSettings()).theme, 'dark');
+  assert.equal((await vault.getSettings()).fontSize, 24);
+  await vault.saveSettings({ ...(await vault.getSettings()), autosaveLimit: 0 });
+  const before = await vault.getAll('saves');
+  assert.equal(await vault.putSave({ ...save, id: 'off-auto', kind: 'auto' }), undefined);
+  assert.deepEqual(await vault.getAll('saves'), before, 'turning autosave off must keep history and prevent new automatic records');
+  await vault.putSave({ ...save, id: 'named-with-autosave-off', kind: 'manual' });
+  assert.ok(await vault.get('saves', 'named-with-autosave-off'));
+  const restored = await openVault({ indexedDB: new IDBFactory() });
+  await restored.restoreBackup(await vault.exportBackup());
+  assert.deepEqual(await restored.getSettings(), await vault.getSettings());
+  restored.close(); vault.close();
+});
+
 test('delete cascades through version/save indexes and a compressed backup restores exact data', async () => {
   const vault = await openVault({ indexedDB: new IDBFactory() });
   const { game, version, save } = fixture();

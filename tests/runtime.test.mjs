@@ -6,6 +6,7 @@ import { parseHTML } from 'linkedom';
 import { normalizeAssetPath, rewriteGameHTML, prepareRuntimeDocument, runtimeBootstrap, createRuntime, GAME_CSP } from '../src/runtime.js';
 import { inspectChoiceBlock } from '../src/choice-debug.js';
 import { inspectArchive } from '../src/importer.js';
+import { readerStyles } from '../src/settings.js';
 
 function sandbox(config = {}, domDocument = null, extensions = {}) {
   const messages = [], listeners = new Map(), timers = new Map(); let nextTimer = 0;
@@ -65,6 +66,23 @@ function restoreGame(state, forcedScene, userRestored) {
 }
 window.__pathosFinishLoading();
 `;
+
+test('reader settings apply inside the isolated game and change without replaying or altering progress', () => {
+  const { document } = parseHTML('<html><head></head><body><div id="main">A story.</div></body></html>');
+  const initial = readerStyles({ theme: 'light', fontSize: 18 });
+  const env = sandbox({ appearanceCSS: initial }, document);
+  env.run(miniEngine); env.run("stats.gold=5;stats.scene=new Scene('chapter',stats);stats.scene.printLoop();"); env.flush();
+  assert.equal(document.querySelector('#pathos-reader-settings').textContent, initial);
+  const before = JSON.stringify(env.context.stats.gold), snapshots = env.messages.filter(message => message.type === 'snapshot').length;
+  const changed = readerStyles({ theme: 'dark', fontFamily: 'sans', fontSize: 24 });
+  env.message('appearance', { css: changed });
+  assert.equal(document.querySelector('#pathos-reader-settings').textContent, changed);
+  assert.equal(document.querySelectorAll('#pathos-reader-settings').length, 1);
+  assert.equal(JSON.stringify(env.context.stats.gold), before);
+  assert.equal(env.messages.filter(message => message.type === 'snapshot').length, snapshots);
+  env.message('appearance', { css: '' });
+  assert.equal(document.querySelector('#pathos-reader-settings').textContent, '');
+});
 
 test('asset paths remain inside the imported root and network schemes are rejected', () => {
   assert.equal(normalizeAssetPath('../scenes/startup.txt', 'web/mygame/index.html'), 'web/scenes/startup.txt');

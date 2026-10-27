@@ -1,11 +1,12 @@
 import { assertJSONValue, validateSaveRecord, validateTimestamp, compactSaveRecord } from './compatibility.js';
 import { writeArchive, readArchive, hashBytes } from './transfer.js';
+import { DEFAULT_SETTINGS, SETTINGS_ID, normalizeSettings } from './settings.js';
 
 // Pre-PathOS identifiers. Renaming them would orphan existing libraries and reject earlier backups.
 export const DATABASE_NAME = 'story-vault';
 export const DATABASE_VERSION = 1;
 export const BACKUP_FORMAT = 'story-vault-backup';
-export const MAX_AUTOSAVES_PER_VERSION = 20;
+export const MAX_AUTOSAVES_PER_VERSION = DEFAULT_SETTINGS.autosaveLimit;
 const STORES = ['games', 'versions', 'saves', 'profiles'];
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -207,7 +208,27 @@ export function createVault(transact, storageKind = 'browser') {
         return { game, version };
       });
     },
-    putSave: save => api.putSaves([save]).then(() => save),
+    getSettings: () => api.get('profiles', SETTINGS_ID).then(record => normalizeSettings(record?.settings)),
+    saveSettings(input) {
+      const settings = normalizeSettings(input, true);
+      return transact(['profiles', 'saves'], 'readwrite', async tx => {
+        await tx.put('profiles', { id: SETTINGS_ID, settings });
+        // Off stops new automatic snapshots without deleting existing history.
+        if (settings.autosaveLimit > 0) {
+          const byVersion = new Map();
+          for (const save of await tx.getAll('saves')) if (save.kind === 'auto') {
+            if (!byVersion.has(save.versionId)) byVersion.set(save.versionId, []);
+            byVersion.get(save.versionId).push(save);
+          }
+          for (const saves of byVersion.values()) {
+            saves.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+            for (const save of saves.slice(settings.autosaveLimit)) await tx.delete('saves', save.id);
+          }
+        }
+        return settings;
+      });
+    },
+    putSave: save => api.putSaves([save]).then(records => records.find(record => record.id === save.id)),
     putSaves(records) {
       if (!Array.isArray(records)) throw new Error('The save batch must be an array.');
       const ids = new Set();
@@ -218,7 +239,9 @@ export function createVault(transact, storageKind = 'browser') {
       }
       if (!records.length) return Promise.resolve([]);
       records = records.map(compactSaveRecord);
-      return transact(['versions', 'saves'], 'readwrite', async tx => {
+      return transact(['profiles', 'versions', 'saves'], 'readwrite', async tx => {
+        const settings = normalizeSettings((await tx.get('profiles', SETTINGS_ID))?.settings);
+        records = records.filter(record => record.kind !== 'auto' || settings.autosaveLimit > 0);
         const installed = new Map();
         for (const gameId of new Set(records.map(record => record.gameId))) {
           // Read keys only: save ownership checks must not load the game assets.
@@ -235,11 +258,11 @@ export function createVault(transact, storageKind = 'browser') {
           const byId = new Map(existing.filter(record => record.kind === 'auto').map(record => [record.id, record]));
           for (const record of records) if (record.kind === 'auto' && record.versionId === versionId) byId.set(record.id, record);
           const automatic = [...byId.values()].sort((left, right) => String(right.createdAt ?? '').localeCompare(String(left.createdAt ?? '')) || right.id.localeCompare(left.id));
-          for (const record of automatic.slice(MAX_AUTOSAVES_PER_VERSION)) expired.add(record.id);
+          for (const record of automatic.slice(settings.autosaveLimit)) expired.add(record.id);
         }
         for (const id of expired) await tx.delete('saves', id);
         for (const record of records) if (!expired.has(record.id)) await tx.put('saves', record);
-        return records;
+        return records.filter(record => !expired.has(record.id));
       });
     },
     exportRecords() {

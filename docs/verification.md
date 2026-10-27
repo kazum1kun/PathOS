@@ -1,5 +1,13 @@
 # Verification for version 0.1.0
 
+## App and reader settings (2026-10-27)
+
+Settings are available from the library menu and reader Tools. Theme supports device, light, and dark modes. The reader supports serif, sans serif, and monospace fonts, 14–32px text, line spacing, reading width, original game appearance, and reduced motion. Appearance is injected into the isolated frame and updates without replaying the page or changing game state. Reduced motion keeps short animation/transition completion events so engines can still advance pages.
+
+Settings persist as a profile in browser/native storage and travel with full backups; existing local preferences win on a merge. Autosave limits are enforced transactionally in both backends. Zero prevents new automatic snapshots without deleting history, including on backgrounding and exit; manual snapshots remain available. A positive limit keeps the newest snapshots per source version and trims older automatic records when saved. Text-only continuations can be included explicitly.
+
+The suite passes 139 tests with three optional private-game checks skipped. Coverage includes invalid values, saved preferences and backups, per-version trimming, native rollback, autosave off, manual saves, continuation settings, preview cancellation, and live reader styling without extra snapshots. Browser checks verified explicit light mode on a dark device, live dark/monospace changes, persistence, and a 390px reader/settings layout. Playing a choice and returning to the library with autosave off left the existing three demo saves unchanged. Native bridge metadata checks and the web build pass; real iOS testing still requires macOS/Xcode and a device.
+
 ## Removing imported versions (2026-10-27)
 
 Each installed version has a Remove action with a confirmation. While another version remains, removal frees package files and preserves saves plus compact source fingerprints. Saved progress can migrate to a compatible installed version or reconnect to the original version when its package is reimported. The active version switches to a remaining package. Removing the final package deletes the game, all saved progress, and retained source metadata in one transaction. The empty library remains usable, and other games are unaffected.
