@@ -1,6 +1,35 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
 import { assessCompatibility, cloneEditedSave, migrateSave, restartFromCheckpoint, validateSaveRecord } from '../src/compatibility.js';
+import { inspectArchive } from '../src/importer.js';
+
+function referenceScene(declarations) {
+  const context = vm.createContext({ console });
+  for (const file of ['scene.js', 'util.js']) vm.runInContext(fs.readFileSync(new URL(`fixtures/choicescript/${file}`, import.meta.url), 'utf8'), context);
+  const scene = new context.Scene('startup', {});
+  for (const declaration of declarations) scene.create(declaration.slice('*create '.length));
+  return scene;
+}
+
+async function importedVersion(id, declarations, future = 'Future chapter') {
+  const zip = new globalThis.JSZip();
+  zip.file('index.html', `<script>allScenes = ${JSON.stringify({
+    startup:{ crc:1, lines:declarations, labels:{} },
+    chapter1:{ crc:2, lines:Array(30).fill('Current chapter'), labels:{} },
+    chapter2:{ crc:3, lines:[future], labels:{} },
+  })};</script>`);
+  return { ...(await inspectArchive(await zip.generateAsync({ type:'uint8array' }))).candidates[0], id, gameId:'game' };
+}
+
+function withCheckpoint(record) {
+  record.snapshot.checkpoint = {
+    state:{ ...structuredClone(record.snapshot.state), lineNum:0 },
+    scene:{ name:'chapter1' }, atSceneStart:true,
+  };
+  return record;
+}
 
 const version = (id, overrides = {}) => ({
   id, gameId: 'game', contentHash: id, engineHash: 'engine-v1', label: id,
@@ -64,6 +93,65 @@ test('new variable defaults are applied only to a new migrated copy', () => {
   assert.notEqual(copy.id, record.id); assert.equal(copy.parentSaveId, record.id);
   assert.equal(copy.versionId, 'v2'); assert.equal(copy.snapshot.state.stats.trust, 0);
   assert.equal(copy.snapshot.state.stats.strength, 12); assert.deepEqual(record, original);
+});
+
+test('real engine numeric strings and arithmetic results migrate and restart across old numeric metadata', async () => {
+  const declarations = ['*create strength 10', '*create name "Knight"'];
+  const reference = referenceScene(declarations);
+  assert.equal(reference.stats.strength, '10');
+  const values = [reference.stats.strength];
+  reference.set('strength + 2');
+  assert.equal(reference.stats.strength, 12);
+  values.push(reference.stats.strength);
+  const source = await importedVersion('v1', declarations, 'Old future');
+  const target = await importedVersion('v2', declarations, 'Changed future');
+  assert.equal(source.engineHash, target.engineHash);
+  for (const oldSource of [false, true]) for (const oldTarget of [false, true]) for (const value of values) {
+    const originalVersion = structuredClone(source), selectedVersion = structuredClone(target);
+    if (oldSource) { originalVersion.initialStats.strength = 10; delete originalVersion.initializers; }
+    if (oldTarget) { selectedVersion.initialStats.strength = 10; delete selectedVersion.initializers; }
+    const record = withCheckpoint(save());
+    record.snapshot.state.stats.strength = value;
+    record.snapshot.checkpoint.state.stats.strength = value;
+    const assessment = assessCompatibility(record, selectedVersion, originalVersion);
+    assert.equal(assessment.canResume, true, JSON.stringify({ oldSource, oldTarget, value, assessment }));
+    assert.equal(assessment.canRestartCheckpoint, true);
+    assert.equal(migrateSave(record, selectedVersion, originalVersion).snapshot.state.stats.strength, value);
+    assert.equal(restartFromCheckpoint(record, selectedVersion, originalVersion).snapshot.state.stats.strength, value);
+  }
+});
+
+test('numeric-looking quoted defaults remain author type changes for migration and restart', async () => {
+  for (const [before, after] of [['10', '"10"'], ['"10"', '10']]) {
+    const source = await importedVersion('v1', [`*create strength ${before}`, '*create name "Knight"']);
+    const target = await importedVersion('v2', [`*create strength ${after}`, '*create name "Knight"']);
+    const reference = referenceScene([`*create strength ${before}`]);
+    const record = withCheckpoint(save());
+    record.snapshot.state.stats.strength = reference.stats.strength;
+    record.snapshot.checkpoint.state.stats.strength = reference.stats.strength;
+    const assessment = assessCompatibility(record, target, source);
+    assert.equal(assessment.canResume, false);
+    assert.deepEqual(assessment.typeChanges, ['strength']);
+    assert.equal(assessment.canRestartCheckpoint, false);
+    assert.throws(() => restartFromCheckpoint(record, target, source), /changed the type/);
+  }
+});
+
+test('new defaults reparse old imported declarations with actual engine string and numeric semantics', async () => {
+  const declarations = ['*create strength 10', '*create name "Knight"'];
+  const added = [String.raw`*create code "a\nb"`, '*create precision 2.50'];
+  const reference = referenceScene(added);
+  const source = await importedVersion('v1', declarations);
+  const target = await importedVersion('v2', [...declarations, ...added]);
+  // Simulate metadata saved by the previous JSON.parse-based importer.
+  target.initialStats.code = 'a\nb';
+  target.initialStats.precision = 2.5;
+  const record = withCheckpoint(save()), original = structuredClone(record);
+  for (const copy of [migrateSave(record, target, source), restartFromCheckpoint(record, target, source)]) {
+    assert.equal(copy.snapshot.state.stats.code, reference.stats.code);
+    assert.equal(copy.snapshot.state.stats.precision, reference.stats.precision);
+  }
+  assert.deepEqual(record, original);
 });
 
 test('migration synchronises compiler CRCs after verifying identical source hashes', () => {

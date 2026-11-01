@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
 import { inspectArchive, ARCHIVE_LIMITS, mimeForPath } from '../src/importer.js';
+
+function referenceScene() {
+  const context = vm.createContext({ console });
+  for (const file of ['scene.js', 'util.js']) vm.runInContext(fs.readFileSync(new URL(`fixtures/choicescript/${file}`, import.meta.url), 'utf8'), context);
+  return new context.Scene('startup', {});
+}
 
 const scene = (lines, crc = 123) => ({ lines, crc, labels:{ intro:1 } });
 function gameHTML({ title = 'A Small Story', store = 'small_story', score = 1, later = 'Next page', extra = '' } = {}) {
@@ -29,7 +37,7 @@ test('imports APK assets, scene index and literal defaults without executing gam
   assert.equal(game.sceneIndex.startup.crc, 123);
   assert.equal(game.sceneIndex.startup.labels.intro, 1);
   assert.equal(game.sceneIndex.startup.hash.length, 64);
-  assert.deepEqual({ ...game.initialStats }, { score:1, enabled:true, name:'Mira' });
+  assert.deepEqual({ ...game.initialStats }, { score:'1', enabled:true, name:'Mira' });
   assert.equal(game.initializers.score, '*create score 1');
   assert.equal(game.unresolvedInitializers.ignored, '*create ignored (1 + 2)');
   assert.deepEqual(game.files.map(file => file.path), ['index.html', 'pictures/scene.png']);
@@ -66,6 +74,23 @@ test('engine fingerprint includes dynamically loaded scripts and array initializ
   assert.equal(first.initialStats.answers, undefined);
 });
 
+test('literal defaults match the actual ChoiceScript engine without evaluating archive scripts', async () => {
+  const literals = ['1', '01', '2.50', 'TRUE', 'false', '"ordinary"', String.raw`"a\nb"`, String.raw`"a\qb"`, String.raw`"slash\\quote\""`];
+  const declarations = literals.map((literal, index) => `*create value_${index} ${literal}`);
+  const reference = referenceScene(), expected = {};
+  for (const [index, declaration] of declarations.entries()) {
+    reference.create(declaration.slice('*create '.length));
+    expected[`value_${index}`] = reference.stats[`value_${index}`];
+  }
+  const unsupported = ['*create dynamic (1 + 2)', '*create interpolation "${value_0}"', '*create exponent 1e3', '*create negative -1'];
+  for (const declaration of unsupported) assert.throws(() => referenceScene().create(declaration.slice('*create '.length)));
+  const html = `<script>allScenes = ${JSON.stringify({ startup:scene([...declarations, ...unsupported]) })};globalThis.importerMustNeverRun=true;</script>`;
+  const candidate = (await inspectArchive(await archive({ 'index.html':html }))).candidates[0];
+  assert.deepEqual({ ...candidate.initialStats }, expected);
+  for (const declaration of unsupported) assert.equal(candidate.unresolvedInitializers[declaration.split(' ')[1]], declaration);
+  assert.equal(globalThis.importerMustNeverRun, undefined);
+});
+
 test('external engine and textual scenes under mygame preserve parent engine paths', async () => {
   const result = await inspectArchive(await archive({
     'project/mygame/index.html':'<html><head><title>Author &amp; Friends</title><script src="../engine.js"></script></head></html>',
@@ -79,7 +104,7 @@ test('external engine and textual scenes under mygame preserve parent engine pat
   assert.equal(game.entryPath, 'mygame/index.html');
   assert.equal(game.storeName, 'authors_story');
   assert.equal(game.title, 'Author & Friends');
-  assert.equal(game.initialStats.score, 8);
+  assert.equal(game.initialStats.score, '8');
   assert.equal(game.sceneIndex.startup.labels.start, 2);
   assert.equal(game.sceneIndex.second.crc, 789);
   assert.ok(game.files.some(file => file.path === 'engine.js'));

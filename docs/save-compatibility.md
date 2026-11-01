@@ -33,6 +33,8 @@ These checks confirm that the structure is compatible, not that the story still 
 
 New defaults come from simple ChoiceScript declarations that can be read without running the game. New or changed dynamic initializers, such as arrays and expressions that can't be evaluated safely without running the game, block migration. Engine variants and custom save systems may need extra adapters. When the app hits something it doesn't support, it says so rather than claiming it works with every APK.
 
+Literal defaults follow ChoiceScript's number and string handling, including its escape rules. Numeric tokens saved as strings and numbers produced by arithmetic are treated as the same declared type. Changing a numeric declaration to a quoted string still blocks migration. Retained declarations also supply corrected defaults for versions imported before these checks were added.
+
 ## Durable state and backups
 
 The web library uses IndexedDB transactions; the iOS app uses native SQLite transactions with game files in Application Support. Both use the same save validation, merge and retention rules. It keeps the 20 most recent automatic snapshots for each installed version. Named, edited, imported, migrated, and checkpoint saves stay until you delete them. A snapshot is taken as a page is displayed, before its story commands run, so restoring it doesn't apply the same effects twice. That also means the page's commands can adjust a variable you edited when the page replays. Versions are immutable playable packages, and each save contains its own snapshot. A full backup includes the installed assets, saves, and game records, so you can move it between a browser and the iOS app without downloading the same game version again.

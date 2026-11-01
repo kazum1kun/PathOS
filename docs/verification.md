@@ -1,5 +1,13 @@
 # Verification for version 0.1.0
 
+## ChoiceScript reference compatibility (2026-11-01)
+
+Fixed the eight discrepancies found against upstream ChoiceScript commit `60a6c3ee7393c9ee7e42650b8e1642ae38e3cb6a`. Runtime hooks now forward checkpoint restore overrides, recognize fake-choice fallthrough, and initialize usage tracking when forcing hidden reuse-limited options. The debugger accepts ChoiceScript string booleans, preserves the original minimum for equal random bounds, and records actual variable reads without mistaking function names for uncertain variables.
+
+The importer reads literal defaults using ChoiceScript number and escape semantics without executing archive scripts. Migration and chapter restart accept numeric strings and arithmetic results while still rejecting changes between numeric and quoted-text declarations. Retained declarations correct defaults from older imported metadata, and original saves stay intact.
+
+Added 15 regression tests using unmodified, licensed upstream engine fixtures pinned under `tests/fixtures/choicescript/`. These cover the eight fixes, ordinary choice exit requirements, fully hidden/disabled menus, numeric representation changes, and older version metadata. All 167 tests pass with three optional private-APK checks skipped; syntax checks, whitespace checks, and the web build pass. The reference fixtures are test-only and are excluded from application bundles.
+
 ## iOS PWA redirect responses (2026-10-27)
 
 Navigation responses that followed an HTTP redirect are reconstructed from the final body/status/headers before leaving the worker. This covers existing cached `index.html` responses and followed network responses, while leaving ordinary assets and unfollowed redirects unchanged. Cached launches still use the active build's shell offline. The build fingerprint now includes the worker source and sorted asset paths, so worker-only changes and asset renames create distinct caches without forcing an update during a live game.

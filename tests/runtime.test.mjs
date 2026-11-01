@@ -68,6 +68,35 @@ function restoreGame(state, forcedScene, userRestored) {
 window.__pathosFinishLoading();
 `;
 
+async function referenceEngineSandbox({ debugMode = true, stats = { gold: 5 }, lines = [] } = {}) {
+  const [util, scene] = await Promise.all(['util.js', 'scene.js'].map(name => readFile(new URL(`./fixtures/choicescript/${name}`, import.meta.url), 'utf8')));
+  const { document } = parseHTML('<html><head></head><body><div id="main"></div></body></html>');
+  const env = sandbox({ debugMode }, document, { navigator: { userAgent: 'Test' }, location: { href: 'http://local/', protocol: 'http:' } });
+  env.context.fixtureStats = stats;
+  env.context.fixtureLines = lines;
+  env.run(util + '\n' + scene);
+  env.run(`
+    var toJson=JSON.stringify, jsonParse=JSON.parse;
+    var stats=fixtureStats, storeName='reference-game', debug=false;
+    var nav={startingStats:{},bugLog:[],products:{},getStartupScene:function(){return 'chapter';}};
+    var main=document.getElementById('main');
+    function safeCall(self,fn){return fn.call(self);}
+    function safeCallback(fn){return fn;}
+    function safeTimeout(fn,ms){return setTimeout(fn,ms);}
+    function trackEvent(){}
+    function clearScreen(fn){main.textContent='';fn();}
+    function printFooter(){}
+    function printOptions(groups,options,callback){main.appendChild(document.createElement('form'));window.lastRenderedOptions=options;}
+    Scene.prototype.paragraph=function(){};
+    Scene.prototype.printLine=function(text){main.appendChild(document.createTextNode(text.trim()+' '));};
+    Scene.prototype.execute=function(){if(!this.lines.length)this.loadLines(fixtureLines.join('\\n'));this.printLoop();};
+    window.__pathosFinishLoading();
+    var scene=new Scene('chapter',stats,nav);
+    scene.loadLines(fixtureLines.join('\\n'));
+  `);
+  return env;
+}
+
 test('reader settings apply inside the isolated game and change without replaying or altering progress', () => {
   const { document } = parseHTML('<html><head></head><body><div id="main">A story.</div></body></html>');
   const initial = readerStyles({ theme: 'light', fontSize: 18 });
@@ -477,7 +506,7 @@ const debugChoiceEngine = `
   function Scene(){this.name='chapter';this.stats=stats;stats.scene=this;stats.sceneName=this.name;this.lines=${JSON.stringify(debugChoiceSource)};this.temps={choice_reuse:'allow',_fakeChoiceDepth:1,_choiceEnds:{}};this.lineNum=0;this.indent=0;}
   Scene.prototype.getIndent=function(line){this.checkedIndent=true;return /^\\s*/.exec(line||'')[0].length;};
   Scene.prototype.tokenizeExpr=function(value){return value;};
-  Scene.prototype.evaluateExpr=function(value){return this.stats[value];};
+  Scene.prototype.evaluateExpr=function(value){return this.getVar(value);};
   Scene.prototype.replaceVariables=function(value){return value;};
   Scene.prototype.getVar=function(value){return this.stats[value]||false;};
   Scene.prototype.parseOptions=function(){if(window.syntaxError)throw new Error('Invalid indent');if(window.emptyMenu)throw new Error('No selectable options');this.lineNum=6;return [{name:'Guarded path',line:4,unselectable:true},{name:'Open path',line:6}];};
@@ -533,7 +562,7 @@ test('choice debugger keeps effects concise and exposes original script and cont
   env.run(debugChoiceEngine
     .replace(JSON.stringify(debugChoiceSource), JSON.stringify(lines))
     .replace('strong:false,ready:false', 'strong:false,ready:false,strength:10,label:"before"')
-    .replace('return this.stats[value];', 'if(value==="strength + 5")return this.stats.strength+5;if(value.startsWith(\'"\'))return JSON.parse(value);return this.stats[value];'));
+    .replace('return this.getVar(value);', 'if(value==="strength + 5")return this.getVar("strength")+5;if(value.startsWith(\'"\'))return JSON.parse(value);return this.getVar(value);'));
   env.flush();
   const panel = document.querySelector('.pathos-choice-debug');
   assert.match(panel.textContent, /Checks/);
@@ -572,7 +601,7 @@ test('choice debugger presents random ranges and dependent branch probabilities 
     .replace(JSON.stringify(debugChoiceSource), JSON.stringify(source))
     .replace('strong:false,ready:false', 'strong:false,ready:false,strength:10,roll:0')
     .replace("[{name:'Guarded path',line:4,unselectable:true},{name:'Open path',line:6}]", "[{name:'Roll',line:2},{name:'Read',line:8}]")
-    .replace('return this.stats[value];', 'if(/^\\d+$/.test(value))return Number(value);if(value==="roll <= 2")return this.stats.roll<=2;if(value==="strength + 5")return this.stats.strength+5;if(value==="strength - 3")return this.stats.strength-3;return this.stats[value];'));
+    .replace('return this.getVar(value);', 'if(/^\\d+$/.test(value))return Number(value);if(value==="roll <= 2")return this.getVar("roll")<=2;if(value==="strength + 5")return this.getVar("strength")+5;if(value==="strength - 3")return this.getVar("strength")-3;return this.getVar(value);'));
   env.flush();
   const panel = document.querySelector('.pathos-choice-debug'), effects = panel.querySelector('.pathos-choice-effects');
   assert.match(effects.textContent, /stats.roll: 0 → 1–6 \(random integer\)/);
@@ -596,6 +625,82 @@ test('debug mode force-selects disabled choices and handles a menu with no selec
   const {document}=parseHTML('<main id="main"></main>'),env=sandbox({debugMode:true},document);
   env.context.syntaxError=true;
   assert.throws(()=>env.run(debugChoiceEngine),/Invalid indent/,'debug mode must not suppress unrelated engine errors');
+});
+
+test('reference engine hidden fake-choice bodies and implicit control flow skip their sibling options when forced', async () => {
+  for (const [command, implicit] of [['*fake_choice', false], ['*choice', true]]) {
+    const env = await referenceEngineSandbox({ stats: { gold: 5, implicit_control_flow: implicit }, lines: [
+      command, '  *if (false)', '    #Hidden one', '      *set gold +1', '      Hidden outcome one.',
+      '    #Hidden two', '      Hidden outcome two.', '  #Open', '    Open outcome.', 'Afterwards.', '*abort'
+    ] });
+    env.run('scene.printLoop();'); env.flush();
+    env.context.document.querySelector('[aria-label="Force-select Hidden one"]').click(); env.flush();
+    assert.equal(env.context.stats.gold, 6);
+    assert.match(env.context.document.getElementById('main').textContent, /Hidden outcome one\. Afterwards\./);
+    assert.doesNotMatch(env.context.document.getElementById('main').textContent, /Hidden outcome two|Open outcome/);
+    assert.deepEqual(env.messages.filter(message => message.type === 'status' && message.payload.level === 'error'), []);
+  }
+});
+
+test('reference engine ordinary choices retain their explicit exit requirement when a hidden option is forced', async () => {
+  const env = await referenceEngineSandbox({ lines: [
+    '*choice', '  *if (false)', '    #Hidden one', '      Hidden outcome one.',
+    '    #Hidden two', '      Hidden outcome two.', '  #Open', '    *abort', 'Afterwards.', '*abort'
+  ] });
+  env.run('scene.printLoop();'); env.flush();
+  env.context.document.querySelector('[aria-label="Force-select Hidden one"]').click(); env.flush();
+  assert.ok(env.messages.some(message => message.type === 'status' && /illegal to fall out of a \*choice/.test(message.payload.message)));
+  assert.doesNotMatch(env.context.document.getElementById('main').textContent, /Afterwards/);
+});
+
+test('reference engine initializes usage tracking when forcing hidden reuse-limited options', async () => {
+  for (const modifier of ['hide_reuse', 'disable_reuse']) {
+    const env = await referenceEngineSandbox({ lines: [
+      '*fake_choice', '  *if (false)', `    *${modifier} #Hidden`, '      *set gold +1', '      Hidden outcome.',
+      '  #Open', '    Open outcome.', 'Afterwards.', '*abort'
+    ] });
+    env.run('scene.printLoop();'); env.flush();
+    assert.equal(env.context.scene.temps.choice_used, undefined, 'the engine skips usage tracking inside a false condition');
+    env.context.document.querySelector('[aria-label="Force-select Hidden"]').click(); env.flush();
+    assert.equal(env.context.scene.temps.choice_used[2], 1);
+    assert.equal(env.context.stats.gold, 6);
+    assert.match(env.context.document.getElementById('main').textContent, /Hidden outcome\. Afterwards\./);
+    assert.deepEqual(env.messages.filter(message => message.type === 'status' && message.payload.level === 'error'), []);
+  }
+});
+
+test('reference engine menus with no selectable options remain inspectable only in debug mode', async () => {
+  const lines = [
+    '*fake_choice', '  *if (false)', '    #Hidden one', '      Hidden outcome one.',
+    '    #Hidden two', '      Hidden outcome two.', '  *selectable_if (false) #Disabled', '    Disabled outcome.', 'Afterwards.', '*abort'
+  ];
+  const normal = await referenceEngineSandbox({ debugMode: false, lines });
+  assert.throws(() => normal.run('scene.printLoop();'), /no selectable options/i);
+  const env = await referenceEngineSandbox({ lines });
+  env.run('scene.printLoop();'); env.flush();
+  assert.equal(env.context.document.querySelectorAll('.pathos-choice-debug button').length, 3);
+  env.context.document.querySelector('[aria-label="Force-select Hidden one"]').click(); env.flush();
+  assert.match(env.context.document.getElementById('main').textContent, /Hidden outcome one\. Afterwards\./);
+  assert.deepEqual(env.messages.filter(message => message.type === 'status' && message.payload.level === 'error'), []);
+});
+
+test('reference engine restore keeps forced stats and temps passed through its five-argument API', async () => {
+  const env = await referenceEngineSandbox({ lines: ['*abort'] });
+  env.run(`restoreGame({stats:{sceneName:'chapter',gold:5},temps:{choice_just_restored_checkpoint:false,_choiceEnds:{}},lineNum:0,indent:0},null,false,{gold:12},{choice_just_restored_checkpoint:true});`);
+  assert.equal(env.context.stats.gold, 12);
+  assert.equal(env.context.stats.scene.temps.choice_just_restored_checkpoint, true);
+});
+
+test('reference engine checkpoint restores retain excluded variables and mark the checkpoint as restored', async () => {
+  const env = await referenceEngineSandbox({ lines: [
+    '*temp checkpoint_exclusions "gold token"', '*temp token 1', '*save_checkpoint test', '*abort'
+  ] });
+  env.run('scene.printLoop();'); env.flush();
+  assert.equal(env.context.scene.temps.choice_just_restored_checkpoint, false);
+  env.run('stats.gold=12; scene.temps.token=9; scene.restore_checkpoint("test");'); env.flush();
+  assert.equal(env.context.stats.gold, 12);
+  assert.equal(env.context.stats.scene.temps.token, 9);
+  assert.equal(env.context.stats.scene.temps.choice_just_restored_checkpoint, true);
 });
 
 test('real APK ChoiceScript computeCookie and restoreGame integrate with boundary capture', { skip: !process.env.PATHOS_APK_HTML }, async () => {

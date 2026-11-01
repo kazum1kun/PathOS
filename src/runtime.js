@@ -501,10 +501,11 @@ export function runtimeBootstrap(config, inspectChoices, normalizePath) {
           if (!debugMode || choiceMenu !== menu || !panel.isConnected) return;
           panel.querySelectorAll('button').forEach(button => { button.disabled = true; });
           try {
-            if (forced && (menu.scene.temps._fakeChoiceDepth > 0 || menu.scene.getVar?.('implicit_control_flow'))) {
+            if (forced && (menu.isFakeChoice || menu.scene.temps._fakeChoiceDepth > 0 || menu.scene.getVar?.('implicit_control_flow'))) {
               menu.scene.temps._choiceEnds ||= {};
               for (const line of model.boundaries) menu.scene.temps._choiceEnds[line] = model.choiceEnd;
             }
+            if (forced && entry.option.reuse && entry.option.reuse !== 'allow') menu.scene.temps.choice_used ||= {};
             transition = 'choice'; menu.callback(entry.option);
           } catch (error) { warning('Could not select this choice: ' + error.message); panel.querySelectorAll('button').forEach(button => { button.disabled = false; }); }
         };
@@ -523,7 +524,7 @@ export function runtimeBootstrap(config, inspectChoices, normalizePath) {
       if (typeof original !== 'function' || original.__pathosChoiceDebug) continue;
       const wrapped = name === 'choice' ? function(...args) {
         const previous = choiceContext;
-        choiceContext = { scene: this, startLine: this.lineNum };
+        choiceContext = { scene: this, startLine: this.lineNum, isFakeChoice: args[1] === true };
         try { return original.apply(this, args); } finally { choiceContext = previous; }
       } : name === 'parseOptions' ? function(...args) {
         const start = this.lineNum;
@@ -582,12 +583,12 @@ export function runtimeBootstrap(config, inspectChoices, normalizePath) {
     // portable snapshot to that first call without inventing a store namespace.
     if (typeof window.restoreGame === 'function' && !window.restoreGame.__pathosHooked) {
       const originalRestore = window.restoreGame;
-      const restore = function(state, forcedScene, userRestored) {
+      const restore = function(state, ...args) {
         if (!initialStateUsed) {
           initialStateUsed = true;
           if (!state?.stats?.sceneName && pendingInitial?.stats?.sceneName) state = clone(pendingInitial);
         }
-        return originalRestore.call(this, restoreAPKPurchaseChecks(state), forcedScene, userRestored);
+        return originalRestore.call(this, restoreAPKPurchaseChecks(state), ...args);
       };
       Object.defineProperty(restore, '__pathosHooked', { value: true });
       window.restoreGame = restore;

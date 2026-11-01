@@ -85,6 +85,8 @@ npm run build
 
 The web build has no install-time dependencies. The ZIP reader is vendored in `src/vendor/` along with its license. Test dependencies are development-only, and native dependencies are pinned separately under `ios-native/`.
 
+ChoiceScript regression tests run against the upstream engine pinned in `tests/fixtures/choicescript/`, including its license and source revision. These checks run offline without private game packages. The fixture files are excluded from the built application.
+
 | Path | Contents |
 | --- | --- |
 | `src/importer.js` | APK/ZIP validation, metadata, assets, and scene indexing |

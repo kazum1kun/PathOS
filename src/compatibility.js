@@ -117,6 +117,48 @@ function referencedScenes(snapshot) {
 
 function typeOf(value) { return value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value; }
 
+// *create accepts a single literal. Numeric tokens keep their original spelling;
+// strings remove backslashes rather than interpreting JSON escape sequences.
+export function parseChoiceScriptLiteral(expression) {
+  if (typeof expression !== 'string') return null;
+  const token = expression.trim();
+  if (/^\d+(?:\.\d+)?$/.test(token)) return { type:'number', value:token };
+  if (/^(?:true|false)$/i.test(token)) return { type:'boolean', value:token.toLowerCase() === 'true' };
+  if (/^"(?:\\[^\r\n]|[^"\\\r\n])*"$/.test(token) && !/[$@]!?!?\{/.test(token)) {
+    return { type:'string', value:token.slice(1, -1).replace(/\\(.)/g, '$1') };
+  }
+  return null;
+}
+
+function initialLiteral(version, name, value = version?.initialStats?.[name]) {
+  const declaration = /^\s*\*create\s+(\S+)\s+(.+?)\s*$/i.exec(version?.initializers?.[name] || '');
+  if (declaration && declaration[1].toLowerCase() === name.toLowerCase()) {
+    const literal = parseChoiceScriptLiteral(declaration[2]);
+    if (literal) return literal;
+  }
+  // Older imported metadata has JSON numbers and may have no declaration.
+  return { type:typeOf(value), value };
+}
+
+function matchesInitialType(value, name, targetVersion, sourceVersion) {
+  const target = initialLiteral(targetVersion, name);
+  if (own(sourceVersion?.initialStats ?? {}, name) || own(sourceVersion?.initializers ?? {}, name)) {
+    if (initialLiteral(sourceVersion, name).type !== target.type) return false;
+  }
+  if (target.type === 'number') {
+    // Arithmetic turns numeric tokens into JS numbers; both forms are normal
+    // engine state. A quoted numeric default still has type "string" above.
+    return (typeof value === 'number' && Number.isFinite(value)) ||
+      (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value)));
+  }
+  return typeOf(value) === target.type;
+}
+
+function initialTypeChanges(stats, targetVersion, sourceVersion) {
+  return Object.keys(targetVersion?.initialStats ?? {}).filter(name =>
+    own(stats, name) && !matchesInitialType(stats[name], name, targetVersion, sourceVersion));
+}
+
 function usableCheckpoint(save, targetVersion) {
   const checkpoint = save.snapshot?.checkpoint;
   if (!checkpoint?.state || typeof checkpoint?.scene?.name !== 'string' || !checkpoint.scene.name || checkpoint.state.lineNum !== 0) return false;
@@ -156,7 +198,8 @@ export function assessCompatibility(save, targetVersion, sourceVersion) {
     result.status = 'blocked'; result.reason = 'This save belongs to a different game.'; return result;
   }
   const unresolvedChanges = changedUnresolvedInitializers(save, targetVersion, sourceVersion);
-  result.canRestartCheckpoint = usableCheckpoint(save, targetVersion) && unresolvedChanges.length === 0;
+  result.canRestartCheckpoint = usableCheckpoint(save, targetVersion) && unresolvedChanges.length === 0 &&
+    initialTypeChanges(save.snapshot.checkpoint.state.stats, targetVersion, sourceVersion).length === 0;
   if (storageNeedsReset(save, targetVersion, sourceVersion)) result.warnings.push(STORAGE_RESET_WARNING);
   if (save.versionId === targetVersion.id || (sourceVersion?.contentHash && sourceVersion.contentHash === targetVersion.contentHash)) {
     result.status = 'exact'; result.canResume = true; result.reason = 'The save matches this installed version.'; return result;
@@ -197,9 +240,9 @@ export function assessCompatibility(save, targetVersion, sourceVersion) {
     result.status = 'blocked'; result.reason = 'The ChoiceScript engine changed. Use the original version for this save.'; return result;
   }
   const initial = targetVersion.initialStats ?? {};
-  for (const [name, value] of Object.entries(initial)) {
+  for (const name of Object.keys(initial)) {
     if (!own(save.snapshot.state.stats, name)) result.newVariables.push(name);
-    else if (typeOf(value) !== typeOf(save.snapshot.state.stats[name])) result.typeChanges.push(name);
+    else if (!matchesInitialType(save.snapshot.state.stats[name], name, targetVersion, sourceVersion)) result.typeChanges.push(name);
   }
   if (result.typeChanges.length) {
     result.status = 'blocked'; result.reason = `The new version changed variable types: ${result.typeChanges.join(', ')}.`; return result;
@@ -267,7 +310,7 @@ export function migrateSave(save, targetVersion, sourceVersion) {
   // changed chapters. Carrying them into this version would bypass the host's
   // compatibility checks when the player uses the game's own Load button.
   if (storageNeedsReset(save, targetVersion, sourceVersion)) migrated.storage = {};
-  for (const key of assessment.newVariables) migrated.snapshot.state.stats[key] = copy(targetVersion.initialStats[key]);
+  for (const key of assessment.newVariables) migrated.snapshot.state.stats[key] = copy(initialLiteral(targetVersion, key).value);
   synchronizeChecksum(migrated.snapshot, targetVersion);
   if (migrated.snapshot.checkpoint) synchronizeChecksum(migrated.snapshot.checkpoint, targetVersion);
   migrated.migration = { fromVersionId: save.versionId, toVersionId: targetVersion.id, warnings: assessment.warnings };
@@ -284,8 +327,8 @@ export function restartFromCheckpoint(save, targetVersion, sourceVersion) {
   const checkpoint = copy(save.snapshot.checkpoint);
   const targetScene = sceneMap(targetVersion)[checkpoint.scene.name.toLowerCase()];
   for (const [key, value] of Object.entries(targetVersion.initialStats ?? {})) {
-    if (!own(checkpoint.state.stats, key)) checkpoint.state.stats[key] = copy(value);
-    else if (typeOf(value) !== typeOf(checkpoint.state.stats[key])) throw new Error(`The new version changed the type of “${key}”. Use the original version for this checkpoint.`);
+    if (!own(checkpoint.state.stats, key)) checkpoint.state.stats[key] = copy(initialLiteral(targetVersion, key, value).value);
+    else if (!matchesInitialType(checkpoint.state.stats[key], key, targetVersion, sourceVersion)) throw new Error(`The new version changed the type of “${key}”. Use the original version for this checkpoint.`);
   }
   // The new scene must be loaded from the selected package, never from the
   // source/CRC attached to the old checkpoint.

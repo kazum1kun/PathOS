@@ -15,6 +15,116 @@ function scene(source, values = {}, temps = {}) {
 }
 function rendered(source, name, extra = {}) { return { name, line: source.lines.findIndex(line => line.endsWith('#' + name)) + 1, ...extra }; }
 
+const upstreamSources = Promise.all(['util.js', 'scene.js'].map(name => readFile(new URL(`./fixtures/choicescript/${name}`, import.meta.url), 'utf8')));
+async function upstreamScene(source, stats = {}) {
+  let randomCalls = 0;
+  const math = Object.assign(Object.create(Math), { random() { randomCalls++; return 0; } });
+  const context = vm.createContext({ console, Math: math, trackEvent() {}, printFooter() {} });
+  for (const script of await upstreamSources) vm.runInContext(script, context);
+  const s = new context.Scene('debug-test', stats);
+  s.lines = source.split('\n'); s.paragraph = () => {}; s.save = () => {};
+  s.resetPage = () => s.printLoop(); s.finish = () => { s.finished = true; };
+  let options;
+  s.renderOptions = (_groups, parsed) => { options = parsed; };
+  s.choice('');
+  return { s, options, randomCalls: () => randomCalls };
+}
+
+test('upstream boolean strings retain known results for inline, selectable and block conditions', async () => {
+  for (const flag of ['true', 'false', true, false]) {
+    const { s, options } = await upstreamScene(`*choice
+  *if (flag) #Inline
+    *finish
+  *selectable_if (flag) #Selectable
+    *finish
+  *if flag
+    #Block
+      *finish
+  *else
+    #Alternative
+      *finish
+  #Other
+    *finish`, { flag });
+    const truth = flag === true || flag === 'true', inspected = inspectChoiceBlock(s, 0, [''], options).options;
+    for (const name of ['Inline', 'Selectable', 'Block']) assert.equal(inspected.find(entry => entry.name === name).conditions[0].result, truth, `${name}: ${flag}`);
+    assert.equal(inspected.find(entry => entry.name === 'Alternative').conditions[0].result, !truth);
+    assert.equal(inspected.find(entry => entry.name === 'Selectable').availability, truth ? 'available' : 'disabled');
+    assert.equal(inspected.find(entry => entry.name === 'Inline').availability, truth ? 'available' : 'hidden');
+  }
+});
+
+test('effect branches using upstream boolean strings match execution', async () => {
+  const { s, options } = await upstreamScene(`*choice
+  #Test
+    *temp enabled "true"
+    *if enabled
+      *set score 7
+    *temp disabled "false"
+    *if disabled
+      *set score 99
+    *else
+      *set score +1
+    *finish`, { score: 0 });
+  const effects = inspectChoiceBlock(s, 0, [''], options).options[0].effects;
+  assert.deepEqual(effects.filter(effect => effect.kind === 'set').map(effect => effect.after), ['7', 8]);
+  assert.ok(effects.every(effect => effect.kind !== 'unknown'));
+  s.standardResolution(options[0]);
+  assert.equal(s.stats.score, effects.filter(effect => effect.kind === 'set').at(-1).after);
+});
+
+test('equal upstream random bounds preserve the original minimum representation', async () => {
+  for (const [bounds, values] of [['1.0 1.0', {}], ['"01" "01"', {}], ['1 1', {}], ['low high', { low: '1.0', high: 1 }]]) {
+    const { s, options, randomCalls } = await upstreamScene(`*choice
+  #Test
+    *rand roll ${bounds}
+    *set score length(roll)
+    *finish`, { roll: 0, score: 0, ...values });
+    const effects = inspectChoiceBlock(s, 0, [''], options).options[0].effects;
+    assert.equal(randomCalls(), 0);
+    s.standardResolution(options[0]);
+    assert.equal(effects.find(effect => effect.kind === 'set').after, s.stats.score, bounds);
+    assert.equal(randomCalls(), 0, 'equal bounds do not draw a random number');
+  }
+});
+
+test('equal random bounds stay known when another world exceeds the expansion budget', async () => {
+  const { s, options, randomCalls } = await upstreamScene(`*choice
+  #Test
+    *rand side 1 2
+    *if side = 1
+      *set low 1.0
+      *set high 1.0
+    *else
+      *set low 1
+      *set high 1000
+    *rand roll low high
+    *if side = 1
+      *set score length(roll)
+    *finish`, { side: 0, low: 0, high: 0, roll: 0, score: 0, implicit_control_flow: true });
+  const effects = inspectChoiceBlock(s, 0, [''], options).options[0].effects;
+  const score = effects.find(effect => effect.kind === 'set' && effect.name === 'score');
+  assert.equal(score.after, 3);
+  assert.equal(score.afterUnknown, false);
+  assert.equal(score.chance, .5);
+  assert.equal(randomCalls(), 0);
+  s.standardResolution(options[0]);
+  assert.equal(s.stats.score, score.after);
+});
+
+test('upstream function names are not mistaken for uncertain variable reads', async () => {
+  const { s, options, randomCalls } = await upstreamScene(`*choice
+  #Test
+    *rand round 1 1000
+    *set score round(2.4)
+    *set score +1
+    *finish`, { round: 0, score: 0 });
+  const effects = inspectChoiceBlock(s, 0, [''], options).options[0].effects;
+  assert.deepEqual(effects.filter(effect => effect.kind === 'set').map(effect => [effect.after, effect.afterUnknown]), [[2, false], [3, false]]);
+  assert.equal(randomCalls(), 0);
+  s.standardResolution(options[0]);
+  assert.equal(s.stats.score, 3);
+});
+
 test('choice inspector reveals inline, nested and reused options without mutating the live scene', () => {
   const s = scene(`*choice
   *if (strong) #Lift the gate.

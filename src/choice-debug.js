@@ -33,16 +33,19 @@ export function inspectChoiceBlock(scene, startLine, groups, renderedOptions) {
     // fallback supports engines that read directly from stats instead of getVar.
     if (typeof original === 'function') target.getVar = function(name, ...args) { record(name); return original.call(this, name, ...args); };
     try {
-      for (const name of expression.replace(/"(?:\\.|[^"\\])*"/g, '').match(/[a-z_][a-z_0-9]*/gi) || []) record(name);
+      if (typeof original !== 'function') for (const name of expression.replace(/"(?:\\.|[^"\\])*"/g, '').match(/[a-z_][a-z_0-9]*/gi) || []) record(name);
       target.lineNum = line;
       const value = target.evaluateExpr(target.tokenizeExpr(expression));
       return { known: value !== undefined && (typeof value !== 'number' || Number.isFinite(value)), value, values: [...values.values()] };
     } catch { return { known: false, uncertain, values: [...values.values()] }; }
     finally { if (own) target.getVar = original; else delete target.getVar; }
   }
+  function booleanValue(value) {
+    return value === true || value === 'true' ? true : value === false || value === 'false' ? false : null;
+  }
   function condition(kind, expression, line, result) {
     const read = result === undefined ? readExpression(shadow, expression, line) : null;
-    return { kind, expression, line: line + 1, result: read ? (read.known && typeof read.value === 'boolean' ? read.value : null) : result, values: read?.values || [] };
+    return { kind, expression, line: line + 1, result: read ? (read.known ? booleanValue(read.value) : null) : result, values: read?.values || [] };
   }
   function indent(at) { shadow.lineNum = at; return shadow.getIndent(lines[at]); }
   function blockEnd(at, limit) { let next = at + 1; while (next < limit && (!lines[next].trim() || indent(next) > indent(at))) next++; return next; }
@@ -89,8 +92,9 @@ export function inspectChoiceBlock(scene, startLine, groups, renderedOptions) {
             const end = blockEnd(branchAt, last), yes = [], no = [];
             for (const state of pending) {
               const read = branchCommand[1].toLowerCase() === 'else' ? { known: true, value: true } : readExpression(state.target, branchCommand[2], branchAt, state.unknown);
-              if (!read.known || typeof read.value !== 'boolean') unavailable(state, branchAt, 'Conditional effects.');
-              else (read.value ? yes : no).push(state);
+              const result = read.known ? booleanValue(read.value) : null;
+              if (result === null) unavailable(state, branchAt, 'Conditional effects.');
+              else (result ? yes : no).push(state);
             }
             resumed.push(...walk(branchAt + 1, end, yes, depth + 1)); pending = no;
             let next = end;
@@ -131,11 +135,14 @@ export function inspectChoiceBlock(scene, startLine, groups, renderedOptions) {
             const integer = [low.value, high.value].every(value => String(parseInt(value, 10)) === String(value)) && ![args[1], args[2]].some(value => /^-?\d+\.\d+$/.test(value));
             const range = { min, max, integer };
             emit(state, at, { kind: 'rand', name, scope: current.scope, before: current.value, beforeUnknown: state.unknown.has(name), range });
-            rolls.push({ state, name, scope: current.scope, min, count: min === max ? 1 : integer ? max - min + 1 : Infinity });
+            rolls.push({ state, name, scope: current.scope, min, fixed: min === max, minimum: low.value, count: min === max ? 1 : integer ? max - min + 1 : Infinity });
           }
           const extraWorlds = rolls.reduce((sum, roll) => sum + roll.count - 1, 0), expand = worlds + extraWorlds <= 128;
           if (expand) worlds += extraWorlds;
-          states = rolls.flatMap(({ state, name, scope, min, count }) => {
+          states = rolls.flatMap(({ state, name, scope, min, fixed, minimum, count }) => {
+            // The engine assigns the original minimum when both bounds are
+            // equal, preserving strings such as "1.0" without drawing a roll.
+            if (fixed) { state.target[scope][name] = minimum; state.unknown.delete(name); return [state]; }
             if (!expand) { state.unknown.add(name); return [state]; }
             return Array.from({ length: count }, (_, index) => {
               const target = cloneScene(state.target), unknown = new Set(state.unknown); unknown.delete(name);

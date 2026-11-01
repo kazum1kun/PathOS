@@ -1,5 +1,6 @@
 /* Archive inspection never evaluates APK JavaScript. The separate player owns execution. */
 import './vendor/jszip.js';
+import { parseChoiceScriptLiteral } from './compatibility.js';
 
 export const ARCHIVE_LIMITS = Object.freeze({
   archiveBytes: 256 * 1024 * 1024,
@@ -143,9 +144,8 @@ function initialDeclarationsFor(scene) {
     const name = match[2].toLowerCase(), declaration = line.trim();
     initializers[name] = declaration;
     if (match[1].toLowerCase() === 'create_array' || !/^[a-z][a-z0-9_]*$/i.test(match[2])) { unresolvedInitializers[name] = declaration; continue; }
-    let value;
-    try { value = JSON.parse(match[3]); } catch { unresolvedInitializers[name] = declaration; continue; }
-    if (typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))) initialStats[name] = value;
+    const literal = parseChoiceScriptLiteral(match[3]);
+    if (literal) initialStats[name] = literal.value;
     else unresolvedInitializers[name] = declaration;
   }
   return { initialStats, initializers, unresolvedInitializers };
