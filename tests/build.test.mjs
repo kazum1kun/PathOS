@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
-test('rebuilding removes obsolete assets from both the bundle and offline manifest', async t => {
+test('builds remove obsolete assets and version worker, asset contents and asset paths together', async t => {
   const root = await mkdtemp(join(tmpdir(), 'pathos-build-'));
   t.after(async () => {
     assert.equal(dirname(root), resolve(tmpdir()));
@@ -30,4 +30,17 @@ test('rebuilding removes obsolete assets from both the bundle and offline manife
   assert.equal(await readFile(join(root, 'dist/src/current.js'), 'utf8'), 'current source');
   assert.deepEqual(JSON.parse(await readFile(join(root, 'dist/asset-list.json'), 'utf8')).sort(), ['./index.html', './src/current.js']);
   assert.notEqual(await readFile(join(root, 'dist/sw.js'), 'utf8'), before, 'the new asset set gets a different offline cache');
+  const cacheVersion = source => /const CACHE='([^']+)'/.exec(source)[1];
+  const originalVersion = cacheVersion(await readFile(join(root, 'dist/sw.js'), 'utf8'));
+  await writeFile(join(root, 'public/sw.js'), "const CACHE='pathos-__BUILD__';\n// New navigation handling.\n");
+  build();
+  const workerVersion = cacheVersion(await readFile(join(root, 'dist/sw.js'), 'utf8'));
+  assert.notEqual(workerVersion, originalVersion, 'a worker-only fix gets a separate cache from the active worker');
+  await rm(join(root, 'src/current.js'));
+  await writeFile(join(root, 'src/renamed.js'), 'current source');
+  build();
+  const renamedVersion = cacheVersion(await readFile(join(root, 'dist/sw.js'), 'utf8'));
+  assert.notEqual(renamedVersion, workerVersion, 'renaming an asset changes the cache even when its contents stay identical');
+  build();
+  assert.equal(cacheVersion(await readFile(join(root, 'dist/sw.js'), 'utf8')), renamedVersion, 'identical builds keep a stable cache version');
 });

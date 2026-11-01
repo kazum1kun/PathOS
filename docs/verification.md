@@ -1,5 +1,11 @@
 # Verification for version 0.1.0
 
+## iOS PWA redirect responses (2026-10-27)
+
+Navigation responses that followed an HTTP redirect are reconstructed from the final body/status/headers before leaving the worker. This covers existing cached `index.html` responses and followed network responses, while leaving ordinary assets and unfollowed redirects unchanged. Cached launches still use the active build's shell offline. The build fingerprint now includes the worker source and sorted asset paths, so worker-only changes and asset renames create distinct caches without forcing an update during a live game.
+
+The regression uses a local HTTP server with a real `index.html → /` redirect. It verifies that cloning retains the offending metadata, while the worker's cached/root/query and network responses preserve UTF-8 HTML, status, and headers with `redirected === false`. Build tests cover worker-only changes, identical-content renames, and stable repeated builds. All 152 tests pass with three optional private-APK checks skipped; syntax and build checks pass. This verification does not substitute for testing on an iOS device.
+
 ## Code cleanup audit (2026-10-27)
 
 Reviewed application/import/settings code, runtime and debugger, browser/native persistence and transfers, Swift bridge/store, build and release workflows, service worker, styles, and tests. Removed duplicate save/import validation, uncalled runtime APIs and native lifecycle hooks, duplicate storage notifications, impossible encoding failures, and redundant UI/API checks. Shared path normalization, asset encoding, hashing, merge decisions, and save ordering replace repeated work. Builds recreate the generated bundle so obsolete files do not enter the offline manifest.

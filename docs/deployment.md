@@ -29,6 +29,14 @@ There's no backend API, authentication service, or database server to set up, an
 
 For a private installation, add authentication at the hosting layer, then test that offline use still works. Some authentication setups prevent the service worker from caching responses.
 
+## Installed PWA updates
+
+The worker keeps each build's HTML, scripts, and styles in a separate cache. Its source and asset paths are included in the build fingerprint, so worker-only fixes also get a new cache. Updates activate after existing app windows close.
+
+Cloudflare Pages [redirects HTML paths to canonical URLs](https://developers.cloudflare.com/pages/configuration/serving-pages/), including `index.html` to the directory root. Cached responses retain that redirect history, which [WebKit rejects for navigation responses](https://raw.githubusercontent.com/WebKit/WebKit/main/Source/WebCore/workers/service/context/ServiceWorkerFetch.cpp). The worker reconstructs redirected navigation responses with the final body, status, and headers before returning them.
+
+After deploying a fix for a PWA that fails to open, launch it online to allow the worker update to download, fully close the PWA and any PathOS tabs, then reopen online. Keep its website data: imported games and saves live there, separately from the worker's app-shell cache.
+
 ## GitHub Actions
 
 The [`Build web app`](../.github/workflows/web.yml) workflow builds on GitHub's standard `ubuntu-24.04` runner with Node.js 22. Push the workflow to the GitHub repository's default branch, then open **Actions → Build web app → Run workflow**, select a branch, and start the run. Leave **Deploy the built website to Cloudflare Pages** unchecked to build without Cloudflare credentials. Download `pathos-web` from the successful run's **Artifacts** section; its ZIP contains the website files ready to serve over HTTPS.

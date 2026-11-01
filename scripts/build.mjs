@@ -14,10 +14,12 @@ async function walk(dir,prefix='') {
   }
 }
 await walk(path.join(root,'dist'));
-await writeFile(path.join(root,'dist/asset-list.json'),JSON.stringify(assets));
+assets.sort();
+const manifest=JSON.stringify(assets);
+await writeFile(path.join(root,'dist/asset-list.json'),manifest);
 const files=await Promise.all(assets.map(x=>readFile(path.join(root,'dist',x))));
 const { createHash }=await import('node:crypto');
-const hash=createHash('sha256');files.forEach(f=>hash.update(f));
 const sw=await readFile(path.join(root,'public/sw.js'),'utf8');
+const hash=createHash('sha256').update(sw).update(manifest);files.forEach(f=>hash.update(f));
 await writeFile(path.join(root,'dist/sw.js'),sw.replace('__BUILD__',hash.digest('hex').slice(0,16)));
 console.log(`Built ${assets.length} static files; no server or build dependencies required.`);

@@ -20,8 +20,11 @@ self.addEventListener('fetch',event=>{
     // A waiting update may already have its own cache. Keep this shell's HTML,
     // scripts and styles together until that worker activates on the next launch.
     const cache=await caches.open(CACHE);
-    const cached=await cache.match(event.request)||(event.request.mode==='navigate'?await cache.match('./index.html'):null);
-    if(cached)return cached;
-    return fetch(event.request);
+    const response=await cache.match(event.request)||(event.request.mode==='navigate'?await cache.match('./index.html'):null)||await fetch(event.request);
+    // Hosting can redirect index.html to /. Safari rejects that redirect history
+    // on cached PWA navigations; a fresh response keeps the final page and headers.
+    return event.request.mode==='navigate'&&response.redirected
+      ?new Response(response.body,{status:response.status,statusText:response.statusText,headers:response.headers})
+      :response;
   })());
 });
