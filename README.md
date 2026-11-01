@@ -50,6 +50,8 @@ Open a game's **Versions** tab and choose **Remove** to free an imported version
 
 While playing, turn on **Debug choices** in the reader toolbar to inspect choice conditions, their true/false results, and the current variables they check. Hidden and disabled options appear with their conditions, including conditional branches and reuse restrictions. Options without conditions say **No checks.** **Selection effects** shows variable changes, random ranges, and readable descriptions of jumps/calls. Small integer rolls also show dependent changes and branch probabilities. Larger or continuous rolls stay as ranges; dependent values are labeled as random results.
 
+Effects look ahead through passage jumps, text-only Next pages, and bundled chapter transitions, including the shared continuation after your current fake choice. Future fake choices with only text or display commands also continue automatically; menus with conditions, reuse restrictions, or state-changing bodies remain decision boundaries. Later chapters are labeled, and their temporary variables start fresh. Inputs, calls, scripts, unknown destinations, and missing chapters stop the preview. Loop and work limits keep long paths bounded, with a notice when a preview is partial.
+
 Expand **Script and context** on an option to see its original source, line numbers, surrounding lines, and enclosing choice/conditions. The selected option is highlighted. Parsed effects omit the original commands and line numbers.
 
 Use **Choose** for an available option or **Force-select** to bypass a hidden or disabled option's checks. Forcing selects its body with your current stats. Previewing uses copies of the game variables and does not draw random numbers.

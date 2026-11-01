@@ -68,17 +68,21 @@ function restoreGame(state, forcedScene, userRestored) {
 window.__pathosFinishLoading();
 `;
 
-async function referenceEngineSandbox({ debugMode = true, stats = { gold: 5 }, lines = [] } = {}) {
+async function referenceEngineSandbox({ debugMode = true, stats = { gold: 5 }, lines = [], files = {}, sceneMap = null, sceneList = null, allScenes = null } = {}) {
   const [util, scene] = await Promise.all(['util.js', 'scene.js'].map(name => readFile(new URL(`./fixtures/choicescript/${name}`, import.meta.url), 'utf8')));
   const { document } = parseHTML('<html><head></head><body><div id="main"></div></body></html>');
-  const env = sandbox({ debugMode }, document, { navigator: { userAgent: 'Test' }, location: { href: 'http://local/', protocol: 'http:' } });
+  const env = sandbox({ debugMode, files }, document, { navigator: { userAgent: 'Test' }, location: { href: 'http://local/', protocol: 'http:' } });
   env.context.fixtureStats = stats;
   env.context.fixtureLines = lines;
+  env.context.fixtureSceneMap = sceneMap;
+  env.context.fixtureSceneList = sceneList;
+  env.context.fixtureScenes = allScenes;
   env.run(util + '\n' + scene);
   env.run(`
     var toJson=JSON.stringify, jsonParse=JSON.parse;
     var stats=fixtureStats, storeName='reference-game', debug=false;
-    var nav={startingStats:{},bugLog:[],products:{},getStartupScene:function(){return 'chapter';}};
+    var nav={startingStats:{},bugLog:[],products:{},_sceneMap:fixtureSceneMap,_sceneList:fixtureSceneList,getStartupScene:function(){return 'chapter';}};
+    window.allScenes=fixtureScenes;
     var main=document.getElementById('main');
     function safeCall(self,fn){return fn.call(self);}
     function safeCallback(fn){return fn;}
@@ -611,6 +615,66 @@ test('choice debugger presents random ranges and dependent branch probabilities 
   assert.match(panel.querySelectorAll('.pathos-choice-effects')[1].textContent, /^No effects\.$/);
   assert.equal(env.context.stats.roll, 0);
   assert.equal(env.context.stats.strength, 10);
+});
+
+test('debug lookahead reads bundled plain, JSON, and embedded chapters without running loaders or changing progress', async () => {
+  const nextLines = [
+    '*temp token 2', '*set gold +3', 'The next chapter.', '*page_break', '*fake_choice',
+    '  #Look', '    The view is clear.', '  #Listen', '    The wind is quiet.',
+    '*set gold +token', '*choice', '  #Spend', '    *set gold +100', '    *abort', '  #Save', '    *abort'
+  ];
+  for (const format of ['plain', 'json', 'embedded']) {
+    const data = format === 'json' ? JSON.stringify({ lines: nextLines, labels: {} }) : nextLines.join('\r\n');
+    const files = format === 'embedded' ? {} : { ['SCENES/CHAPTER2.TXT' + (format === 'json' ? '.JSON' : '')]: { url: 'blob:chapter2', data: Buffer.from(data).toString('base64') } };
+    const env = await referenceEngineSandbox({ debugMode: false, files, allScenes: format === 'embedded' ? { CHAPTER2: { lines: nextLines } } : null, lines: [
+      '*choice', '  #Travel', '    *set gold +1', '    *goto_scene chapter2', '  #Wait', '    *abort'
+    ] });
+    env.run('scene.printLoop();'); env.flush();
+    const before = env.run('JSON.stringify({stats:{...stats,scene:null},temps:scene.temps,lineNum:scene.lineNum,indent:scene.indent,bugLog:nav.bugLog})');
+    const published = env.messages.filter(message => ['snapshot', 'storage'].includes(message.type)).length;
+    env.run('Scene.prototype.loadScene=function(){throw new Error("Preview ran a scene loader");};Math.random=function(){throw new Error("Preview drew randomness");};');
+    env.message('debug', { enabled: true }); env.flush();
+    const panel = env.context.document.querySelector('.pathos-choice-debug'), effects = panel.querySelector('.pathos-choice-effects').textContent;
+    assert.match(panel.textContent, /Looks ahead through pages, jumps, and harmless fake choices/);
+    assert.match(effects, /stats.gold: 5 → 6 \(\+1\)/, format);
+    assert.match(effects, /Chapter: chapter2/, format);
+    assert.match(effects, /stats.gold: 6 → 9 \(\+3\)/, format);
+    assert.match(effects, /stats.gold: 9 → 11 \(\+2\)/, format);
+    assert.doesNotMatch(effects, /111|\+100/, 'another meaningful choice is a lookahead boundary');
+    assert.equal(env.run('JSON.stringify({stats:{...stats,scene:null},temps:scene.temps,lineNum:scene.lineNum,indent:scene.indent,bugLog:nav.bugLog})'), before, format);
+    assert.equal(env.messages.filter(message => ['snapshot', 'storage'].includes(message.type)).length, published, format);
+    assert.deepEqual(env.messages.filter(message => message.type === 'status' && message.payload.level === 'error'), [], format);
+  }
+});
+
+test('debug lookahead derives finish destinations from navigator data without invoking navigation methods', async () => {
+  for (const navigation of [{ sceneMap: { chapter: 'chapter2' } }, { sceneList: ['chapter', 'chapter2'] }]) {
+    const env = await referenceEngineSandbox({ ...navigation, allScenes: { chapter2: { lines: ['*set gold +3', '*abort'] } }, lines: [
+      '*choice', '  #Continue', '    *finish', '  #Wait', '    *abort'
+    ] });
+    env.run('nav.nextSceneName=function(){throw new Error("Preview invoked navigation");};scene.printLoop();'); env.flush();
+    const effects = env.context.document.querySelector('.pathos-choice-effects').textContent;
+    assert.match(effects, /Chapter: chapter2/);
+    assert.match(effects, /stats.gold: 5 → 8 \(\+3\)/);
+    assert.equal(env.context.stats.gold, 5);
+    assert.equal(env.context.stats.sceneName, 'chapter');
+    assert.deepEqual(env.messages.filter(message => message.type === 'status' && message.payload.level === 'error'), []);
+  }
+});
+
+test('debug lookahead leaves unavailable or invalid bundled chapter sources as partial previews', async () => {
+  for (const data of [null, '{broken JSON', JSON.stringify({ lines: [17] })]) {
+    const files = data === null ? {} : { 'scenes/chapter2.txt.json': { url: 'blob:chapter2', data: Buffer.from(data).toString('base64') } };
+    const env = await referenceEngineSandbox({ files, lines: [
+      '*choice', '  #Travel', '    *set gold +1', '    *goto_scene chapter2', '  #Wait', '    *abort'
+    ] });
+    env.run('scene.printLoop();'); env.flush();
+    const effects = env.context.document.querySelector('.pathos-choice-effects').textContent;
+    assert.match(effects, /stats.gold: 5 → 6 \(\+1\)/);
+    assert.match(effects, /Go to chapter: chapter2/);
+    assert.equal(env.context.stats.gold, 5);
+    assert.deepEqual(env.messages.filter(message => message.type === 'status' && message.payload.level === 'error'), []);
+  }
 });
 
 test('debug mode force-selects disabled choices and handles a menu with no selectable options', () => {

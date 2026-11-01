@@ -395,12 +395,54 @@ export function runtimeBootstrap(config, inspectChoices, normalizePath) {
     if (choiceMenu) restoreChoiceControls(choiceMenu);
     choiceMenu = null;
   }
+  function inspectChoiceMenu(scene, startLine, groups, options) {
+    const sources = new Map(), paths = new Map(Object.keys(config.files).map(path => [path.toLowerCase(), path]));
+    function loadScene(name) {
+      if (typeof name !== 'string' || !name || /[\\/:?#\u0000-\u001f]/.test(name) || name === '.' || name === '..') return null;
+      name = name.replace(/ /g, '_');
+      const key = name.toLowerCase();
+      if (sources.has(key)) return sources.get(key);
+      let lines = null;
+      const bundled = Object.keys(window.allScenes || {}).find(sceneName => sceneName.toLowerCase() === key);
+      if (bundled) lines = window.allScenes[bundled]?.lines;
+      if (!Array.isArray(lines) || !lines.every(line => typeof line === 'string')) {
+        lines = null;
+        const base = typeof window.Scene?.baseUrl === 'string' ? window.Scene.baseUrl : 'scenes';
+        for (const extension of ['.txt.json', '.txt']) {
+          const path = pathOf(base + '/' + name + extension), file = path && config.files[paths.get(path.toLowerCase())];
+          if (!file) continue;
+          try {
+            const text = new TextDecoder().decode(bytesOf(file)).replace(/^\uFEFF/, '');
+            const candidate = extension === '.txt.json' ? JSON.parse(text)?.lines : text.replace(/\r/g, '').split('\n');
+            if (Array.isArray(candidate) && candidate.every(line => typeof line === 'string')) { lines = candidate; break; }
+          } catch { /* Invalid or absent bundled sources leave a partial preview. */ }
+        }
+      }
+      const source = lines ? { name, lines } : null;
+      sources.set(key, source);
+      return source;
+    }
+    function nextScene(name) {
+      const nav = scene.nav;
+      if (!nav || typeof name !== 'string') return null;
+      const key = name.toLowerCase(), map = nav._sceneMap;
+      if (map && typeof map === 'object') {
+        const current = Object.keys(map).find(sceneName => sceneName.toLowerCase() === key);
+        if (current && typeof map[current] === 'string') return map[current];
+      }
+      const list = nav._sceneList;
+      if (!Array.isArray(list)) return null;
+      const at = list.findIndex(sceneName => typeof sceneName === 'string' && sceneName.toLowerCase() === key);
+      return at >= 0 && typeof list[at + 1] === 'string' ? list[at + 1] : null;
+    }
+    return inspectChoices(scene, startLine, groups, options, { loadScene, nextScene });
+  }
   function showChoiceDebug(menu) {
     if (menu !== choiceMenu || !menu.root.isConnected) return;
     restoreChoiceControls(menu);
     if (!debugMode) return;
     let model;
-    try { model = inspectChoices(menu.scene, menu.startLine, menu.groups, menu.options); }
+    try { model = inspectChoiceMenu(menu.scene, menu.startLine, menu.groups, menu.options); }
     catch (error) { warning('Could not inspect these choices: ' + error.message); return; }
     const panel = document.createElement('section'); panel.className = 'pathos-choice-debug'; panel.style.overflowWrap = 'anywhere';
     panel.setAttribute('aria-label', 'Choice debugger');
@@ -410,6 +452,7 @@ export function runtimeBootstrap(config, inspectChoices, normalizePath) {
     style.textContent += '.pathos-choice-source{margin:12px 0;font-size:.85em}.pathos-choice-source summary{cursor:pointer}.pathos-choice-source pre{max-height:320px;overflow:auto;border:1px solid currentColor;border-radius:4px;padding:8px;font:.9em/1.5 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;tab-size:2}.pathos-choice-source .source-line{display:block;opacity:.65;white-space:pre-wrap;font-family:inherit!important;line-height:inherit!important}.pathos-choice-source .source-option{opacity:1;border-left:2px solid currentColor;padding-left:6px}.pathos-choice-source .source-header{font-weight:bold}';
     panel.appendChild(style);
     const heading = document.createElement('h2'); heading.textContent = 'Debug choices'; panel.appendChild(heading);
+    const explanation = document.createElement('small'); explanation.textContent = 'Looks ahead through pages, jumps, and harmless fake choices. Stops at decisions or effects that cannot be predicted.'; panel.appendChild(explanation);
     const list = document.createElement('ul'); panel.appendChild(list);
     function valueText(value) {
       if (value === undefined) return 'unset';
@@ -474,7 +517,9 @@ export function runtimeBootstrap(config, inspectChoices, normalizePath) {
         }
         detail(row, 'h3', 'Selection effects');
         const effects = document.createElement('div'); effects.className = 'pathos-choice-effects'; row.appendChild(effects);
+        let effectScene = menu.scene.name;
         for (const effect of entry.effects || []) {
+          if (effect.scene && effect.scene !== effectScene) { detail(effects, 'small', 'Chapter: ' + effect.scene); effectScene = effect.scene; }
           let text;
           if (effect.kind === 'set' || effect.kind === 'temp') {
             const before = effect.beforeUnknown ? 'random value' : alternatives(effect.beforeValues), after = effect.afterUnknown ? 'random result' : alternatives(effect.afterValues);
@@ -533,7 +578,7 @@ export function runtimeBootstrap(config, inspectChoices, normalizePath) {
           // A valid menu can have every option hidden/disabled. Keep it
           // inspectable in debug mode without suppressing other parse errors.
           if (!debugMode || choiceContext?.scene !== this || start !== choiceContext.startLine || !/no selectable options/i.test(error.message)) throw error;
-          const model = inspectChoices(this, start, args[1], []);
+          const model = inspectChoiceMenu(this, start, args[1], []);
           if (!model.options.length) throw error;
           this.lineNum = model.choiceEnd;
           const options = entries => entries.map(entry => ({ ...entry.option, unselectable: true, ...(entry.children ? { suboptions: options(entry.children) } : {}) }));

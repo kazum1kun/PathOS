@@ -258,7 +258,7 @@ Afterwards.`);
   ]);
   assert.equal(result.options[0].effects.at(-1).command, 'goto_scene');
   assert.equal(result.options[0].effects.at(-1).destination, 'chapter2');
-  assert.deepEqual(result.options[0].effectNotes, []);
+  assert.deepEqual(result.options[0].effectNotes, ['Chapter source unavailable: chapter2.']);
   assert.deepEqual(result.options[1].effects.map(item => [item.name, item.before, item.after]), [['strength', 10, 15], ['ready', true, false]], 'each option starts from current state and temps take priority');
   assert.deepEqual(result.options[2].effects, []);
   assert.deepEqual(result.options[2].effectNotes, []);
@@ -378,6 +378,232 @@ test('invalid random arguments and branching expansion are bounded without repor
   branching.stats.roll = 0; branching.stats.other = 0;
   const bounded = inspectChoiceBlock(branching, 0, [''], [rendered(branching, 'Roll')]);
   assert.equal(bounded.options[0].effects.at(-1).kind, 'unknown', 'separate conditional branches share the same outcome budget');
+});
+
+test('lookahead follows jumps out of conditionals, page breaks and cosmetic fake choices to the next decision', () => {
+  const s = effectScene(`*choice
+  #Test
+    *if ready
+      *set strength + 5
+      *goto reward
+    *set strength 7
+  #Wait
+    *finish
+*label reward
+*page_break Next
+*set strength - 3
+*fake_choice
+  #Speak
+    A greeting.
+  #Nod
+    A quiet nod.
+*set strength + 5
+*choice
+  #Next decision
+    *set strength 7`);
+  const before = JSON.stringify(s);
+  const entry = inspectChoiceBlock(s, 0, [''], [rendered(s, 'Test'), rendered(s, 'Wait')]).options[0];
+  assert.deepEqual(entry.effects.filter(effect => effect.kind === 'set').map(effect => effect.after), [15, 12, 17]);
+  assert.deepEqual(entry.effects.filter(effect => effect.kind === 'flow').map(effect => effect.command), ['goto', 'page_break', 'fake_choice', 'choice']);
+  assert.deepEqual(entry.effectNotes, []);
+  assert.equal(JSON.stringify(s), before, 'lookahead does not mutate live variables, position or labels');
+});
+
+test('jumping inside a conditional reconstructs its continuation and unvisited choice bodies stay bounded', () => {
+  for (const [tail, expected] of [
+    [
+    `*if ready
+  *label inside
+  *set strength + 5
+*elseif ready
+  *set strength 7
+*else
+  *set strength 7
+*set strength - 3`, [15, 12]],
+    [
+    `*fake_choice
+  *if ready
+    #Entered option
+      *label inside
+      *set strength + 5
+  *else
+    #Skipped option
+      *set strength 7
+  #Sibling
+    *set strength 7
+*set strength - 3`, [15]],
+  ]) {
+    const s = effectScene(`*choice\n  #Test\n    *goto inside\n${tail}\n*choice\n  #Stop\n    *finish`);
+    const entry = inspectChoiceBlock(s, 0, [''], [rendered(s, 'Test')]).options[0];
+    assert.deepEqual(entry.effects.filter(effect => effect.kind === 'set').map(effect => effect.after), expected, tail);
+  }
+});
+
+test('current choice exit behavior stays fixed at menu render even if its body changes implicit control flow', async () => {
+  for (const initial of [true, false]) for (const random of [true, false]) {
+    const { s, options } = await upstreamScene(`*choice
+  #Test
+    ${random ? '*rand roll 1 2' : '*comment no roll'}
+    *set implicit_control_flow ${!initial}
+  #Sibling
+    *finish
+*set score 5
+*finish`, { implicit_control_flow: initial, roll: 0, score: 0 });
+    const entry = inspectChoiceBlock(s, 0, [''], options).options[0];
+    const predicted = entry.effects.filter(effect => effect.name === 'score').map(effect => effect.after);
+    assert.deepEqual(predicted, initial ? ['5'] : [], `${initial}, random=${random}`);
+    if (initial) s.standardResolution(options[0]);
+    else assert.throws(() => s.standardResolution(options[0]), /illegal to fall out/);
+    assert.equal(Number(s.stats.score), initial ? 5 : 0);
+  }
+});
+
+test('current fake and implicit choices preview the shared tail without selecting sibling bodies', () => {
+  for (const [command, implicit, expected] of [['*fake_choice', false, [15, 12]], ['*choice', true, [15, 12]], ['*choice', false, [15]]]) {
+    const s = effectScene(`${command}
+  *if ready
+    #Test
+      *set strength + 5
+  #Sibling
+    *set strength 7
+*set strength - 3
+*choice
+  #Stop
+    *finish`);
+    s.stats.implicit_control_flow = implicit;
+    const entry = inspectChoiceBlock(s, 0, [''], [rendered(s, 'Test'), rendered(s, 'Sibling')]).options[0];
+    assert.deepEqual(entry.effects.filter(effect => effect.kind === 'set').map(effect => effect.after), expected, command + ':' + implicit);
+  }
+});
+
+test('chapter lookahead preserves stats, resets temps even for same-scene jumps, and separates identical line positions', () => {
+  const s = effectScene(`*choice
+  #Test
+    *set strength + 5
+    *goto_scene SECOND
+*label resume
+*set strength + 5
+*choice
+  #Stop
+    *finish`);
+  s.name = 'first'; s.temps.strength = 20;
+  const second = { name: 'second', lines: ['*comment next chapter', '*page_break', '*set strength + 5', '*goto_scene first resume'] };
+  const before = JSON.stringify(s);
+  const entry = inspectChoiceBlock(s, 0, [''], [rendered(s, 'Test')], { loadScene: name => name.toLowerCase() === 'second' ? second : null }).options[0];
+  assert.deepEqual(entry.effects.filter(effect => effect.kind === 'set').map(effect => [effect.scene, effect.scope, effect.before, effect.after]), [
+    ['first', 'temps', 20, 25], ['second', 'stats', 10, 15], ['first', 'stats', 15, 20],
+  ]);
+  assert.deepEqual(entry.effectNotes, []);
+  assert.equal(JSON.stringify(s), before);
+  const same = effectScene('*choice\n  #Test\n    *goto_scene first resume\n*label resume\n*set strength + 5\n*choice\n  #Stop\n    *finish');
+  same.name = 'first'; same.temps.strength = 20;
+  const sameEntry = inspectChoiceBlock(same, 0, [''], [rendered(same, 'Test')]).options[0];
+  assert.equal(sameEntry.effects.find(effect => effect.kind === 'set').after, 15);
+});
+
+test('future choices with state changes, conditions or reuse restrictions remain decision boundaries', () => {
+  for (const menu of [
+    '*fake_choice\n  #One\n    *set strength + 5\n  #Two\n    *set strength - 3',
+    '*fake_choice\n  *if (ready) #One\n  #Two',
+    '*fake_choice\n  *hide_reuse #One\n  #Two',
+    '*fake_choice\n  #One\n    *input_text label\n  #Two',
+    '*choice\n  #One\n  #Two',
+  ]) {
+    const s = effectScene(`*choice\n  #Test\n    *goto after\n*label after\n${menu}\n*set strength 7`);
+    const entry = inspectChoiceBlock(s, 0, [''], [rendered(s, 'Test')]).options[0];
+    assert.deepEqual(entry.effects.filter(effect => effect.kind === 'set'), [], menu);
+    assert.match(entry.effects.at(-1).command, /^(fake_choice|choice)$/);
+  }
+  const s = effectScene('*choice\n  #Test\n    *goto after\n*label after\n*fake_choice\n  #One\n  #Two\n*set strength 7');
+  s.temps.choice_reuse = 'hide';
+  assert.equal(inspectChoiceBlock(s, 0, [''], [rendered(s, 'Test')]).options[0].effects.at(-1).command, 'fake_choice');
+});
+
+test('missing passages and sources stay partial, while repeated jumps stop within a bounded preview', () => {
+  for (const [command, note] of [['*goto missing', 'Passage unavailable: missing.'], ['*goto_scene missing', 'Chapter source unavailable: missing.']]) {
+    const s = effectScene(`*choice\n  #Test\n    *set strength + 5\n    ${command}\n    *set strength 7`);
+    const entry = inspectChoiceBlock(s, 0, [''], [rendered(s, 'Test')]).options[0];
+    assert.deepEqual(entry.effects.filter(effect => effect.kind === 'set').map(effect => effect.after), [15]);
+    assert.deepEqual(entry.effectNotes, [note]);
+  }
+  const s = effectScene('*choice\n  #Test\n    *goto loop\n*label loop\n*page_break\n*goto loop');
+  const entry = inspectChoiceBlock(s, 0, [''], [rendered(s, 'Test')]).options[0];
+  assert.ok(entry.effects.length < 10);
+  assert.deepEqual(entry.effectNotes, ['Preview stopped at a repeated passage.']);
+});
+
+test('indirect jumps use projected values and stop on unresolved or random destinations', async () => {
+  const { s, options, randomCalls } = await upstreamScene(`*choice
+  #Test
+    *temp destination "reward"
+    *goto {destination}
+    *set score 999
+*label reward
+*set score +5
+*choice
+  #Stop
+    *finish`, { score: 0 });
+  const effects = inspectChoiceBlock(s, 0, [''], options).options[0].effects;
+  assert.deepEqual(effects.filter(effect => effect.kind === 'set').map(effect => effect.after), [5]);
+  assert.equal(randomCalls(), 0);
+  assert.equal(s.stats.score, 0);
+  for (const command of ['*goto {missing}', '*rand destination 1 1000\n    *goto {destination}']) {
+    const { s, options } = await upstreamScene(`*choice\n  #Test\n    ${command}\n    *set score 999\n  #Wait\n    *finish`, { score: 0, destination: 0 });
+    const entry = inspectChoiceBlock(s, 0, [''], options).options[0];
+    assert.equal(entry.effects.some(effect => effect.name === 'score'), false);
+    assert.deepEqual(entry.effectNotes, ['Destination could not be predicted.']);
+  }
+});
+
+test('random paths that jump to a shared continuation retain probabilities and place shared effects after both branches', async () => {
+  const { s, options, randomCalls } = await upstreamScene(`*choice
+  #Roll
+    *rand roll 1 2
+    *if roll = 1
+      *goto reward
+    *set score +3
+    *goto reward
+*label reward
+*set score +5
+*choice
+  #Stop
+    *finish`, { score: 0, roll: 0 });
+  const entry = inspectChoiceBlock(s, 0, [''], options).options[0];
+  const changes = entry.effects.filter(effect => effect.name === 'score');
+  assert.deepEqual(changes[0].afterValues, [3]);
+  assert.equal(changes[0].chance, .5);
+  assert.deepEqual(changes[1].afterValues, [5, 8]);
+  assert.equal(changes[1].chance, 1);
+  assert.deepEqual(entry.effectNotes, []);
+  assert.equal(s.stats.score, 0);
+  assert.equal(randomCalls(), 0);
+});
+
+test('reference-style checkpoint bookkeeping can cross chapters beyond the direct-body effect limit', () => {
+  const s = effectScene('*choice\n  #Test\n    *goto_scene checkpoint'); s.name = 'first';
+  for (let index = 0; index < 67; index++) s.stats['saved' + index] = 0;
+  const checkpoint = { name: 'checkpoint', lines: [...Array.from({ length: 67 }, (_, index) => `*set saved${index} strength`), '*page_break', '*goto_scene second'] };
+  const second = { name: 'second', lines: ['*set strength + 5', '*choice', '  #Stop', '    *finish'] };
+  const entry = inspectChoiceBlock(s, 0, [''], [rendered(s, 'Test')], { loadScene: name => ({ checkpoint, second })[name] }).options[0];
+  assert.equal(entry.effects.filter(effect => effect.kind === 'set').length, 68);
+  assert.equal(entry.effects.findLast(effect => effect.kind === 'set').after, 15);
+  assert.deepEqual(entry.effectNotes, []);
+});
+
+test('custom finish captions and scene-end fallthrough use chapter order without treating captions as labels', () => {
+  for (const source of [
+    '*choice\n  #Test\n    *finish Journey to the next chapter',
+    '*fake_choice\n  #Test\n    A quiet moment.\nShared story text.',
+  ]) {
+    const s = effectScene(source); s.name = 'first';
+    const entry = inspectChoiceBlock(s, 0, [''], [rendered(s, 'Test')], {
+      nextScene: name => name === 'first' ? 'second' : null,
+      loadScene: name => name === 'second' ? { name, lines: ['*set strength + 5', '*choice', '  #Stop', '    *finish'] } : null,
+    }).options[0];
+    assert.equal(entry.effects.find(effect => effect.kind === 'set').after, 15);
+    assert.deepEqual(entry.effectNotes, []);
+    assert.equal(s.stats.strength, 10);
+  }
 });
 
 test('supplied APK parser and resolution support inspecting and forcing a hidden fake-choice branch', {skip:!process.env.PATHOS_APK_SCENE || !process.env.PATHOS_APK_HTML}, async()=>{
