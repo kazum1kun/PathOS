@@ -69,7 +69,8 @@ export function inspectChoiceBlock(scene, startLine, groups, renderedOptions, co
   const implicit = readExpression(shadow, 'implicit_control_flow', startLine);
   // The engine records this when rendering the menu. Changing the flag inside
   // an option does not change the exit behavior of that already-rendered menu.
-  const currentFallsThrough = /^\s*\*fake_choice\b/i.test(lines[startLine]) || implicit.known && booleanValue(implicit.value) === true;
+  const currentFallsThrough = typeof context.allowFallthrough === 'boolean' ? context.allowFallthrough
+    : /^\s*\*fake_choice\b/i.test(lines[startLine]) || implicit.known && booleanValue(implicit.value) === true;
   function previewEffects(from, to, option) {
     const records = new Map(), edges = new Map(), effectNotes = new Set(), sources = previewSources;
     let steps = 0, worlds = 1, recordLimit = 40;

@@ -294,3 +294,13 @@ dialog .settings-hint{font-family:var(--sans);font-size:13px;line-height:1.5;col
 .game-drop-target h2{font-size:clamp(28px,6vw,44px);font-weight:normal;line-height:1.2;margin-bottom:12px}
 .game-drop-target p{font-family:var(--sans);font-size:16px;line-height:1.5;color:var(--ink-2)}
 .drop-symbol{display:block;font-size:64px;line-height:1.2;margin-bottom:16px;color:var(--ribbon)}
+.live-variable-list{max-height:45vh;overflow:auto;overscroll-behavior:contain;padding-right:6px;margin-bottom:12px}
+.live-variable-list .variable-grid{max-height:none;overflow:visible;padding-right:0}
+.live-variable-group{min-width:0;margin:0 0 16px;padding:12px;border:1px solid var(--rule);border-radius:4px}
+.live-variable-group legend{padding:0 6px;font-family:var(--sans);font-size:14px;font-weight:600;color:var(--ink-2)}
+.live-variable-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.live-variable-row label{min-width:0;overflow-wrap:anywhere}
+.live-variable-row label small{display:block;font-family:var(--sans);font-size:12px;font-weight:normal;color:var(--ink-3)}
+.live-variable-row input,.live-variable-row select{min-width:0;min-height:44px;font-size:16px}
+.live-variable-row.is-dirty{border-left:3px solid var(--ribbon);padding-left:9px}
+#live-variable-count{font-family:var(--sans);font-size:13px;color:var(--ink-3)}

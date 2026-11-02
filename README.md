@@ -58,9 +58,13 @@ Use **Choose** for an available option or **Force-select** to bypass a hidden or
 
 The toggle updates the current choice controls without replaying the page or creating a save. It starts off when PathOS opens and keeps your preference for the current app session. The bundled demo includes hidden and disabled examples. Standard ChoiceScript choice menus are supported; unfamiliar syntax is reported, and conditions that cannot be evaluated show “unknown.”
 
+Choose **Variables** in the reader toolbar or **Tools** while playing to search and edit persistent stats and current-scene variables. Numbers, text, and booleans keep their original types; engine bookkeeping and complex values stay out of the editor. **Apply changes** updates the current playthrough and refreshes choices and debug predictions. **Cancel** leaves values unchanged; **Reload values** replaces unapplied edits with current values. Close an in-game stats screen before applying changes.
+
+Live edits follow your autosave setting and are included in manual snapshots and backups. Resuming applies them after the saved page’s story commands, so those commands do not overwrite your edits or apply a change twice. Existing saves remain unchanged, and continuing the story carries the edited values into subsequent pages. Text already displayed updates as you continue.
+
 ## Backups
 
-On phones and smaller tablets, **Menu** contains game/save import, backup export and restore, device storage, and Help. **Import save** also stays visible in the selected game's Saves tab. While playing, open **Tools** for save status, **Save snapshot**, and **Debug choices**. Save-row actions use larger tap targets in a two-column layout.
+On phones and smaller tablets, **Menu** contains game/save import, backup export and restore, device storage, and Help. **Import save** also stays visible in the selected game's Saves tab. While playing, open **Tools** for save status, **Variables**, **Save snapshot**, and **Debug choices**. Save-row actions use larger tap targets in a two-column layout.
 
 Export a compressed ZIP backup of your library to move games and saves between a browser and the iOS app. Backups store game files as compressed binary data and share identical files across versions. Individual save exports are compressed ZIP files too. Saves keep progress, chapter checkpoints, in-game save slots, and preferences without repeating chapter source or regenerable engine caches; existing stored saves are compacted when the app opens. PathOS keeps the 20 most recent automatic saves for each installed version by default; change the limit in Settings. Manual and edited saves are kept separately. Editing a save always creates a copy. You can also import raw ChoiceScript saves and save bundles from the DinoKnights editor by choosing the installed version they came from. The browser and the iOS app have separate storage, and this release has no cloud sync.
 

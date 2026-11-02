@@ -150,6 +150,7 @@ export function runtimeBootstrap(config, inspectChoices, normalizePath) {
   const initializedStores = new Set();
   let transition = null, renderingPageBreak = 0;
   let debugMode = !!config.debugMode, choiceContext = null, choiceMenu = null;
+  let liveScene = null, liveRevision = 0, mainDepth = 0, pendingLiveEdits = config.state?.liveEdits;
   const warning = message => { if (!seenWarnings.has(message)) { seenWarnings.add(message); post('status', { level: 'error', message }); } };
   const status = (level, message) => post('status', { level, message });
   const clone = value => JSON.parse(JSON.stringify(value));
@@ -373,13 +374,13 @@ export function runtimeBootstrap(config, inspectChoices, normalizePath) {
   }
   function snapshot() {
     if (!candidate) throw new Error('The game has not reached a restorable page yet.');
-    return clone({ format: 'story-vault-state-v1', state: candidate.state, scene: candidate.scene, ...(candidate.transition ? { transition: candidate.transition } : {}), ...(candidate.preview ? { preview: candidate.preview } : {}), ...(checkpoint ? { checkpoint } : {}), capturedAt: new Date().toISOString() });
+    return clone({ format: 'story-vault-state-v1', state: candidate.state, scene: candidate.scene, ...(candidate.liveEdits ? { liveEdits: candidate.liveEdits } : {}), ...(candidate.transition ? { transition: candidate.transition } : {}), ...(candidate.preview ? { preview: candidate.preview } : {}), ...(checkpoint ? { checkpoint } : {}), capturedAt: new Date().toISOString() });
   }
   function publish() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       if (!candidate) return;
-      const signature = JSON.stringify(candidate.state);
+      const signature = JSON.stringify([candidate.state, candidate.liveEdits]);
       if (signature !== lastPublished) { lastPublished = signature; post('snapshot', snapshot()); }
       if (!ready) { ready = true; status('ready', 'Game ready. Your progress is saved when the story changes.'); }
     }, 140);
@@ -395,7 +396,100 @@ export function runtimeBootstrap(config, inspectChoices, normalizePath) {
     if (choiceMenu) restoreChoiceControls(choiceMenu);
     choiceMenu = null;
   }
-  function inspectChoiceMenu(scene, startLine, groups, options) {
+  const editableName = name => typeof name === 'string' && /^[a-z][a-z0-9_]*$/i.test(name) && !/^(?:_|choice_|scene$|scenename$|constructor$|prototype$|param(?:_|$))/i.test(name);
+  const editableValue = value => ['string', 'boolean', 'number'].includes(typeof value) && (typeof value !== 'number' || Number.isFinite(value));
+  function variableState() {
+    if (!candidate || !liveScene || mainDepth) throw new Error('Wait for the story page to finish loading before editing variables.');
+    const variables = [];
+    for (const scope of ['stats', 'temps']) for (const [name, value] of Object.entries(liveScene[scope] || {})) {
+      if (editableName(name) && editableValue(value)) variables.push({ scope, name, type: typeof value, value });
+    }
+    variables.sort((a, b) => a.scope.localeCompare(b.scope) || a.name.localeCompare(b.name));
+    return { scene: liveScene.name, revision: liveRevision, variables };
+  }
+  function validateVariable(scope, name, value) {
+    if (!['stats', 'temps'].includes(scope) || !editableName(name)) throw new Error('This engine variable cannot be edited.');
+    if (!Object.hasOwn(liveScene[scope] || {}, name)) throw new Error('The variable ' + name + ' is no longer available. Refresh the variable list.');
+    const current = liveScene[scope][name];
+    if (!editableValue(current) || !editableValue(value) || typeof current !== typeof value) throw new Error('Enter a valid ' + typeof current + ' value for ' + name + '.');
+    return current;
+  }
+  function refreshLiveChoices() {
+    const menu = choiceMenu;
+    if (!menu || menu.scene !== liveScene) return;
+    try {
+      if (typeof menu.scene.parseOptions !== 'function') throw new Error('No choice parser');
+      const target = Object.assign(Object.create(Object.getPrototypeOf(menu.scene)), menu.scene);
+      const stats = { ...menu.scene.stats }; delete stats.scene;
+      target.stats = clone(stats); target.stats.scene = target; target.temps = clone(menu.scene.temps || {});
+      target.debugMode = false; target.lineNum = menu.startLine;
+      target.displayOptionConditions = clone(menu.scene.displayOptionConditions || []);
+      target.rollbackLineCoverage = () => {};
+      const options = target.parseOptions(target.getIndent(target.lines[menu.startLine]), menu.groups, menu.allowFallthrough);
+      target.temps._choiceEnds ||= {};
+      for (const option of options) target.temps._choiceEnds[option.line - 1] = menu.allowFallthrough ? target.lineNum : 0;
+      const previous = choiceContext;
+      for (const [node] of menu.controls) node.remove();
+      menu.panel?.remove();
+      menu.scene.temps._choiceEnds = target.temps._choiceEnds;
+      if (target.temps.choice_used) menu.scene.temps.choice_used = target.temps.choice_used;
+      choiceContext = { scene: menu.scene, startLine: menu.startLine, isFakeChoice: menu.isFakeChoice, allowFallthrough: menu.allowFallthrough };
+      try { menu.scene.renderOptions(menu.groups, options, menu.callback); }
+      finally { choiceContext = previous; }
+    } catch {
+      // Keep stale eligibility controls from selecting an option whose checks
+      // no longer pass. The source inspector can still show and force options.
+      for (const [node] of menu.controls) {
+        if (node.matches?.('button,input,select')) node.disabled = true;
+        node.querySelectorAll?.('button,input,select').forEach(control => { control.disabled = true; });
+      }
+      if (debugMode) showChoiceDebug(menu);
+      return 'Variables updated. These choice controls could not be refreshed; use Debug choices to inspect and select an option.';
+    }
+  }
+  function editLiveVariables(payload) {
+    const current = variableState();
+    const shown = window.stats?.scene;
+    if (shown && shown !== liveScene && (shown.secondaryMode || shown.saveSlot || /^(choicescript_stats|choicescript_upgrade)$/.test(shown.name))) throw new Error('Close the game’s stats or save screen before applying variable edits.');
+    if (!payload || payload.scene !== current.scene || payload.revision !== current.revision) throw new Error('The story has changed. Refresh the variable list before applying edits.');
+    if (!Array.isArray(payload.changes) || payload.changes.length > 10000) throw new Error('Invalid variable changes.');
+    const seen = new Set(), changes = [];
+    for (const change of payload.changes) {
+      if (!change || typeof change !== 'object') throw new Error('Invalid variable change.');
+      const before = validateVariable(change.scope, change.name, change.value), key = change.scope + ':' + change.name;
+      if (seen.has(key)) throw new Error('A variable can only be changed once per request.');
+      seen.add(key);
+      if (!Object.hasOwn(change, 'before') || before !== change.before) throw new Error('The value of ' + change.name + ' has changed. Refresh the variable list.');
+      if (before !== change.value) changes.push(change);
+    }
+    let notice;
+    if (changes.length) {
+      candidate.liveEdits ||= { stats: {}, temps: {} };
+      for (const { scope, name, value } of changes) { liveScene[scope][name] = value; candidate.liveEdits[scope] ||= {}; candidate.liveEdits[scope][name] = value; }
+      liveRevision++; candidate.transition = 'edit';
+      notice = refreshLiveChoices(); publish();
+    }
+    return { ...variableState(), snapshot: snapshot(), ...(notice ? { notice } : {}) };
+  }
+  function restoreLiveEdits() {
+    if (pendingLiveEdits === undefined || !initialStateUsed || !liveScene || !candidate) return;
+    const edits = pendingLiveEdits; pendingLiveEdits = undefined;
+    try {
+      if (candidate.scene.name !== (config.state?.scene?.name || pendingInitial?.stats?.sceneName)) throw new Error('The edited story page changed.');
+      if (!edits || typeof edits !== 'object' || Array.isArray(edits) || Object.keys(edits).some(scope => !['stats', 'temps'].includes(scope))) throw new Error('Invalid saved variable edits.');
+      const changes = [];
+      for (const [scope, entries] of Object.entries(edits)) {
+        if (!entries || typeof entries !== 'object' || Array.isArray(entries)) throw new Error('Invalid saved variable edits.');
+        for (const [name, value] of Object.entries(entries)) { validateVariable(scope, name, value); changes.push({ scope, name, value }); }
+      }
+      if (!changes.length) return;
+      for (const { scope, name, value } of changes) liveScene[scope][name] = value;
+      candidate.liveEdits = clone(edits); liveRevision++;
+      const notice = refreshLiveChoices();
+      if (notice) warning(notice);
+    } catch (error) { warning('Could not restore live variable edits: ' + error.message); }
+  }
+  function inspectChoiceMenu(scene, startLine, groups, options, allowFallthrough) {
     const sources = new Map(), paths = new Map(Object.keys(config.files).map(path => [path.toLowerCase(), path]));
     function loadScene(name) {
       if (typeof name !== 'string' || !name || /[\\/:?#\u0000-\u001f]/.test(name) || name === '.' || name === '..') return null;
@@ -435,14 +529,14 @@ export function runtimeBootstrap(config, inspectChoices, normalizePath) {
       const at = list.findIndex(sceneName => typeof sceneName === 'string' && sceneName.toLowerCase() === key);
       return at >= 0 && typeof list[at + 1] === 'string' ? list[at + 1] : null;
     }
-    return inspectChoices(scene, startLine, groups, options, { loadScene, nextScene });
+    return inspectChoices(scene, startLine, groups, options, { loadScene, nextScene, ...(typeof allowFallthrough === 'boolean' ? { allowFallthrough } : {}) });
   }
   function showChoiceDebug(menu) {
     if (menu !== choiceMenu || !menu.root.isConnected) return;
     restoreChoiceControls(menu);
     if (!debugMode) return;
     let model;
-    try { model = inspectChoiceMenu(menu.scene, menu.startLine, menu.groups, menu.options); }
+    try { model = inspectChoiceMenu(menu.scene, menu.startLine, menu.groups, menu.options, menu.allowFallthrough); }
     catch (error) { warning('Could not inspect these choices: ' + error.message); return; }
     const panel = document.createElement('section'); panel.className = 'pathos-choice-debug'; panel.style.overflowWrap = 'anywhere';
     panel.setAttribute('aria-label', 'Choice debugger');
@@ -569,7 +663,10 @@ export function runtimeBootstrap(config, inspectChoices, normalizePath) {
       if (typeof original !== 'function' || original.__pathosChoiceDebug) continue;
       const wrapped = name === 'choice' ? function(...args) {
         const previous = choiceContext;
-        choiceContext = { scene: this, startLine: this.lineNum, isFakeChoice: args[1] === true };
+        const isFakeChoice = args[1] === true;
+        let implicit = false;
+        try { implicit = this.getVar?.('implicit_control_flow'); } catch { /* Older engines may omit this setting. */ }
+        choiceContext = { scene: this, startLine: this.lineNum, isFakeChoice, allowFallthrough: isFakeChoice || implicit === true || implicit === 'true' };
         try { return original.apply(this, args); } finally { choiceContext = previous; }
       } : name === 'parseOptions' ? function(...args) {
         const start = this.lineNum;
@@ -578,7 +675,7 @@ export function runtimeBootstrap(config, inspectChoices, normalizePath) {
           // A valid menu can have every option hidden/disabled. Keep it
           // inspectable in debug mode without suppressing other parse errors.
           if (!debugMode || choiceContext?.scene !== this || start !== choiceContext.startLine || !/no selectable options/i.test(error.message)) throw error;
-          const model = inspectChoiceMenu(this, start, args[1], []);
+          const model = inspectChoiceMenu(this, start, args[1], [], choiceContext.allowFallthrough);
           if (!model.options.length) throw error;
           this.lineNum = model.choiceEnd;
           const options = entries => entries.map(entry => ({ ...entry.option, unselectable: true, ...(entry.children ? { suboptions: options(entry.children) } : {}) }));
@@ -658,15 +755,20 @@ export function runtimeBootstrap(config, inspectChoices, normalizePath) {
     prototype.printLoop = function(...args) {
       const main = !this.secondaryMode && !this.saveSlot && this.name !== 'choicescript_stats' && this.name !== 'choicescript_upgrade';
       if (main) {
+        mainDepth++; liveScene = this; liveRevision++;
         discardChoiceMenu();
+        candidate = null;
         try {
           const state = decodeEngineState(this);
           candidate = { state, scene: currentScene(state), transition };
           if (this.lineNum === 0 && !(state.stats.choice_subscene_stack?.length)) checkpoint = { ...clone(candidate), atSceneStart: true };
         } catch (error) { warning('Could not capture this page: ' + error.message); }
       }
-      const result = original.apply(this, args);
-      if (main) {
+      let result;
+      try { result = original.apply(this, args); }
+      finally { if (main) mainDepth--; }
+      if (main && !mainDepth) {
+        restoreLiveEdits();
         const root = document.querySelector('#container1 #main') || document.querySelector('#main') || document.querySelector('#story') || document.querySelector('main');
         if (candidate && root) candidate.preview = String(root.innerText || root.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 180);
         publish();
@@ -720,6 +822,10 @@ export function runtimeBootstrap(config, inspectChoices, normalizePath) {
         debugMode = !!message.payload?.enabled;
         if (choiceMenu) showChoiceDebug(choiceMenu);
         post('result', { enabled: debugMode }, message.id);
+      } else if (message.type === 'variables') {
+        post('result', variableState(), message.id);
+      } else if (message.type === 'editVariables') {
+        post('result', editLiveVariables(message.payload), message.id);
       }
     } catch (error) { post('result', { error: error.message }, message.id); }
   });
@@ -764,6 +870,8 @@ export async function createRuntime({ container, version, storage = {}, state = 
     async capture() { const result = await request('capture'); onStorage(result.storage); return result.snapshot; },
     setDebugMode(enabled) { return request('debug', { enabled: !!enabled }); },
     setAppearance(css) { return request('appearance', { css }); },
+    getVariables() { return request('variables'); },
+    editVariables(edits) { return request('editVariables', edits); },
     dispose() { disposed = true; window.removeEventListener('message', listener); iframe.remove(); prepared.dispose();
       for (const task of waiting.values()) { clearTimeout(task.timer); task.reject(new Error('The player was closed.')); } waiting.clear(); }
   };

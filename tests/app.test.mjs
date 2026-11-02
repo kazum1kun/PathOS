@@ -59,6 +59,20 @@ async function harness({ installed = [version()], saved = [], runtimeFactory, ar
       capture: async () => { options.onStorage(structuredClone(player.values)); return structuredClone(player.state); },
       setDebugMode: async enabled => { player.debugMode=enabled; return {enabled}; },
       setAppearance: async css => { player.appearanceCSS=css; return {applied:true}; },
+      variableReads: 0, variableWrites: [],
+      getVariables: async () => {
+        player.variableReads++;
+        return {scene:player.state.scene.name,revision:1,variables:['stats','temps'].flatMap(scope=>Object.entries({...player.state.state[scope],...player.state.liveEdits?.[scope]})
+          .filter(([name,value])=>!/^(?:scene$|scenename$|choice_|_|constructor$|prototype$|param(?:_|$))/i.test(name)&&['number','string','boolean'].includes(typeof value))
+          .map(([name,value])=>({scope,name,type:typeof value,value})))};
+      },
+      editVariables: async request => {
+        player.variableWrites.push(structuredClone(request));
+        player.state.liveEdits||={};
+        for(const change of request.changes){player.state.liveEdits[change.scope]||={};player.state.liveEdits[change.scope][change.name]=change.value;}
+        options.onSnapshot(structuredClone(player.state));
+        return {...await player.getVariables(),snapshot:structuredClone(player.state)};
+      },
       dispose: () => { player.disposed = true; },
     };
     players.push(player);
@@ -199,6 +213,110 @@ test('choice debug toggle controls the active runtime without adding saves and k
     assert.match(h.document.querySelector('#runtime-status').textContent,/unavailable/);
     assert.equal(button.disabled,false);
     assert.equal(button.getAttribute('aria-pressed'),'true','a failed toggle retains the last working mode');
+  }finally{await h.close();}
+});
+
+test('live Variables lists both scopes, filters without losing drafts, and applies typed edits to this playthrough', async () => {
+  const original=save();Object.assign(original.snapshot.state.stats,{ready:false,hero_name:'<b>Alex</b>',choice_internal:3});original.snapshot.state.temps={strength:2,ready:true};
+  const h=await harness({saved:[original]});
+  try{
+    await h.app.handleAction('resume',original.id);
+    const trigger=h.document.querySelector('#play-variables');assert.equal(trigger.disabled,false);
+    h.document.querySelector('#reader-menu-toggle').click();
+    await clickAndWait(trigger,()=>h.document.querySelector('#live-variables-editor'));
+    assert.equal(h.document.querySelector('#reader-menu-toggle').getAttribute('aria-expanded'),'false');
+    assert.equal(h.document.querySelectorAll('[data-live-name="strength"]').length,2);
+    assert.equal(h.document.querySelector('[data-live-name="choice_internal"]'),null);
+    const field=(scope,name)=>h.document.querySelector(`[data-live-scope="${scope}"][data-live-name="${name}"] input, [data-live-scope="${scope}"][data-live-name="${name}"] select`);
+    assert.equal(field('stats','hero_name').value,'<b>Alex</b>');assert.equal(h.document.querySelector('#live-variables-editor b'),null);
+    field('stats','strength').value='42';field('stats','strength').oninput();
+    field('temps','strength').value='7';field('temps','strength').oninput();
+    field('stats','ready').querySelector('option[value="true"]').selected=true;field('stats','ready').onchange();
+    field('stats','hero_name').value='Morgan';field('stats','hero_name').oninput();
+    const search=h.document.querySelector('#live-variable-search');search.value='hero';search.oninput();
+    assert.equal(field('stats','strength').closest('[data-live-row]').hidden,true);
+    assert.equal(field('stats','strength').value,'42','search keeps hidden drafts');
+    assert.match(h.document.querySelector('#live-variable-count').textContent,/4 changed/);
+    search.value='missing';search.oninput();assert.equal(h.document.querySelector('#live-variable-empty').hidden,false);
+    await clickAndWait(h.document.querySelector('#live-variable-apply'),()=>!h.document.querySelector('#modal').open);
+    const player=h.players[0];assert.equal(player.variableWrites.length,1);
+    assert.deepEqual(player.state.liveEdits,{stats:{hero_name:'Morgan',ready:true,strength:42},temps:{strength:7}});
+    assert.equal(player.state.state.stats.strength,6,'page-start state stays separate from live edits');
+    await h.app.flush();
+    const records=await h.vault.getAll('saves');assert.equal(records.length,2);
+    assert.deepEqual(records.find(record=>record.id!==original.id).snapshot.liveEdits,player.state.liveEdits);
+    assert.deepEqual(records.find(record=>record.id===original.id),original,'editing play never overwrites an existing save');
+  }finally{await h.close();}
+});
+
+test('opening and cancelling Variables does not edit or save, and invalid numbers keep the editor open', async () => {
+  const original=save(),h=await harness({saved:[original]});
+  try{
+    await h.app.handleAction('resume',original.id);
+    const trigger=h.document.querySelector('#play-variables');
+    await clickAndWait(trigger,()=>h.document.querySelector('#live-variables-editor'));
+    assert.equal(h.document.querySelector('#live-variable-apply').disabled,true);
+    const strength=h.document.querySelector('[data-live-name="strength"] input');strength.value='';strength.oninput();
+    await clickAndWait(h.document.querySelector('#live-variable-apply'),()=>h.document.querySelector('#live-variable-error').textContent);
+    assert.match(h.document.querySelector('#live-variable-error').textContent,/valid number for strength/);
+    assert.equal(h.players[0].variableWrites.length,0);assert.equal(h.document.querySelector('#modal').open,true);
+    h.document.querySelector('[data-close]').click();await h.app.flush();
+    assert.deepEqual(await h.vault.getAll('saves'),[original]);
+    assert.equal(h.players[0].state.liveEdits,undefined);
+  }finally{await h.close();}
+});
+
+test('Variables reports stale edits and ignores a listing returned after leaving its playthrough', async () => {
+  const h=await harness();
+  try{
+    await h.app.launch(game,version());
+    const trigger=h.document.querySelector('#play-variables');
+    await clickAndWait(trigger,()=>h.document.querySelector('#live-variables-editor'));
+    const strength=h.document.querySelector('[data-live-name="strength"] input');strength.value='42';strength.oninput();
+    h.players[0].editVariables=async()=>{throw new Error('The story has moved on. Reopen Variables to edit its current values.');};
+    await clickAndWait(h.document.querySelector('#live-variable-apply'),()=>h.document.querySelector('#live-variable-error').textContent);
+    assert.match(h.document.querySelector('#live-variable-error').textContent,/story has moved on/);
+    assert.equal(h.document.querySelector('#modal').open,true);assert.equal(strength.disabled,false);
+    await clickAndWait(h.document.querySelector('#live-variable-reload'),()=>!strength.isConnected);
+    assert.equal(h.document.querySelector('[data-live-name="strength"] input').value,'6','reloading replaces unapplied drafts with current values');
+    h.document.querySelector('[data-close]').click();
+    let resolveListing;h.players[0].getVariables=()=>new Promise(resolve=>{resolveListing=resolve;});trigger.click();
+    assert.equal(trigger.disabled,true);
+    await h.app.leavePlayer(false);await h.app.launch(game,version());
+    resolveListing({scene:'old-chapter',revision:1,variables:[]});await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(h.document.querySelector('#modal').open,false);assert.equal(trigger.disabled,false);
+    assert.equal(h.players[1].variableReads,0);
+  }finally{await h.close();}
+});
+
+test('live edits are meaningful autosave progress and saved-copy edits preserve their updated override values', async () => {
+  const original=save();original.snapshot.liveEdits={stats:{strength:42}};
+  const h=await harness({saved:[original]});
+  try{
+    h.app.openEditor(original);
+    const strength=h.document.querySelector('[data-variable="strength"]');assert.equal(strength.value,'42');strength.value='99';
+    await clickAndWait(h.document.querySelector('#edit-confirm'),()=>!h.document.querySelector('#modal').open);
+    const edited=(await h.vault.getAll('saves')).find(record=>record.id!==original.id);
+    assert.equal(edited.snapshot.liveEdits.stats.strength,99);assert.equal(edited.snapshot.state.stats.strength,99);
+    await h.app.handleAction('resume',original.id);await h.app.flush();
+    assert.equal((await h.vault.getAll('saves')).length,2,'resuming an overlay does not create a duplicate save');
+    h.players[0].state.liveEdits.stats.strength=43;await h.app.flush();
+    assert.equal((await h.vault.getAll('saves')).length,3,'editing only an overlay still creates an autosave');
+  }finally{await h.close();}
+});
+
+test('Variables respects disabled autosaves and manual snapshots keep live edits', async () => {
+  const h=await harness({settings:{...settingsModule.DEFAULT_SETTINGS,autosaveLimit:0}});
+  try{
+    await h.app.launch(game,version());
+    await clickAndWait(h.document.querySelector('#play-variables'),()=>h.document.querySelector('#live-variables-editor'));
+    const strength=h.document.querySelector('[data-live-name="strength"] input');strength.value='42';strength.oninput();
+    await clickAndWait(h.document.querySelector('#live-variable-apply'),()=>!h.document.querySelector('#modal').open);
+    await h.app.flush();assert.equal((await h.vault.getAll('saves')).length,0);
+    h.document.querySelector('#save-now').click();
+    await clickAndWait(h.document.querySelector('#save-confirm'),()=>!h.document.querySelector('#modal').open);
+    const records=await h.vault.getAll('saves');assert.equal(records.length,1);assert.equal(records[0].kind,'manual');
+    assert.equal(records[0].snapshot.liveEdits.stats.strength,42);
   }finally{await h.close();}
 });
 

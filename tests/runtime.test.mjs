@@ -7,6 +7,7 @@ import { normalizeAssetPath, rewriteGameHTML, prepareRuntimeDocument, runtimeBoo
 import { inspectChoiceBlock } from '../src/choice-debug.js';
 import { inspectArchive } from '../src/importer.js';
 import { readerStyles } from '../src/settings.js';
+import { createDemoArchive } from '../src/demo.js';
 
 function sandbox(config = {}, domDocument = null, extensions = {}) {
   const messages = [], listeners = new Map(), timers = new Map(); let nextTimer = 0;
@@ -468,6 +469,184 @@ test('stats views cannot replace main progress; forged postMessages are ignored'
   const captured = env.messages.find(message => message.id === 68).payload.snapshot;
   assert.equal(captured.scene.name, 'chapter');
   assert.equal(captured.state.stats.sceneName, 'chapter');
+});
+
+function liveVariables(env, id = 900) {
+  env.message('variables', null, { id });
+  return env.messages.findLast(message => message.id === id).payload;
+}
+function changeVariables(env, changes, current = liveVariables(env), id = 901) {
+  env.message('editVariables', { scene: current.scene, revision: current.revision, changes }, { id });
+  return env.messages.findLast(message => message.id === id).payload;
+}
+
+test('live variable listing reads the main scene while stats are open without saving or exposing engine internals', () => {
+  const env = sandbox(); env.run(miniEngine);
+  env.run(`stats.gold=5;stats.title='Ada';stats.ready=false;stats.choice_secret=12;stats.list=[1,2];stats.scene=new Scene('chapter',stats);stats.scene.temps.token=3;stats.scene.temps.param_1=99;stats.scene.temps._internal=true;stats.scene.printLoop();var mainScene=stats.scene;`);
+  env.flush();
+  const before = JSON.stringify(env.messages), current = liveVariables(env);
+  assert.equal(current.scene, 'chapter');
+  assert.deepEqual(current.variables.map(variable => [variable.scope, variable.name, variable.value]), [
+    ['stats', 'gold', 15], ['stats', 'ready', false], ['stats', 'title', 'Ada'], ['temps', 'token', 3],
+  ]);
+  env.run(`var statsScreen=new Scene('choicescript_stats',stats);statsScreen.secondaryMode='stats';statsScreen.temps.token=88;statsScreen.printLoop();`);
+  const opened = liveVariables(env, 902);
+  assert.equal(opened.scene, 'chapter');
+  assert.equal(opened.variables.find(variable => variable.scope === 'temps' && variable.name === 'token').value, 3);
+  assert.equal(opened.revision, current.revision);
+  assert.match(changeVariables(env, [{ scope: 'temps', name: 'token', before: 3, value: 9 }], opened).error, /Close the game’s stats or save screen/);
+  assert.equal(env.context.mainScene.temps.token, 3);
+  assert.equal(env.messages.filter(message => message.type === 'snapshot').length, JSON.parse(before).filter(message => message.type === 'snapshot').length);
+  assert.equal(env.context.mainScene.lineNum, 3);
+});
+
+test('live edits apply typed stats and temps without replay and resume after the saved page effects', () => {
+  const env = sandbox(); env.run(miniEngine);
+  env.run(`stats.gold=5;stats.title='Ada';stats.ready=false;stats.scene=new Scene('chapter',stats);stats.scene.temps.token=3;stats.scene.printLoop();`);
+  env.flush();
+  const result = changeVariables(env, [
+    { scope: 'stats', name: 'gold', before: 15, value: 42 },
+    { scope: 'stats', name: 'title', before: 'Ada', value: 'Bea' },
+    { scope: 'stats', name: 'ready', before: false, value: true },
+    { scope: 'temps', name: 'token', before: 3, value: 8 },
+  ]);
+  env.flush();
+  assert.equal(result.error, undefined);
+  assert.equal(env.context.stats.gold, 42);
+  assert.equal(env.context.stats.title, 'Bea');
+  assert.equal(env.context.stats.ready, true);
+  assert.equal(env.context.stats.scene.temps.token, 8);
+  assert.equal(env.context.stats.scene.lineNum, 3, 'editing does not execute the page again');
+  assert.equal(result.snapshot.state.stats.gold, 5, 'the replay boundary remains the original page start');
+  assert.deepEqual(result.snapshot.liveEdits, { stats: { gold: 42, title: 'Bea', ready: true }, temps: { token: 8 } });
+  const captured = env.messages.findLast(message => message.type === 'snapshot').payload;
+  assert.equal(captured.transition, 'edit');
+  const resumed = sandbox({ state: captured }); resumed.run(miniEngine);
+  resumed.run('restoreGame(null, null, false);'); resumed.flush();
+  assert.equal(resumed.context.stats.gold, 42, 'restoring applies the edited value after the page adds ten');
+  assert.equal(resumed.context.stats.title, 'Bea');
+  assert.equal(resumed.context.stats.scene.temps.token, 8);
+  assert.deepEqual(resumed.messages.findLast(message => message.type === 'snapshot').payload.liveEdits, captured.liveEdits);
+  resumed.run('stats.scene.printLoop();'); resumed.flush();
+  const next = resumed.messages.findLast(message => message.type === 'snapshot').payload;
+  assert.equal(next.state.stats.gold, 42);
+  assert.equal(next.state.temps.token, 8);
+  assert.equal(next.liveEdits, undefined, 'progression folds prior edits into the next page-start snapshot');
+  assert.equal(resumed.context.stats.gold, 52);
+});
+
+test('live edits validate the whole request atomically and reject stale pages, values and forged requests', () => {
+  const env = sandbox(); env.run(miniEngine);
+  env.run(`stats.gold=5;stats.scene=new Scene('chapter',stats);stats.scene.printLoop();`); env.flush();
+  const current = liveVariables(env);
+  const valid = { scope: 'stats', name: 'gold', before: 15, value: 42 };
+  for (const invalid of [
+    { scope: 'stats', name: 'missing', before: 0, value: 1 },
+    { scope: 'stats', name: 'sceneName', before: 'chapter', value: 'other' },
+    { scope: 'temps', name: 'choice_crc', before: 123, value: 999 },
+    { scope: 'stats', name: '__proto__', before: {}, value: {} },
+    { scope: 'stats', name: 'gold', before: 15, value: '42' },
+    { scope: 'stats', name: 'gold', before: 15, value: Infinity },
+  ]) {
+    const result = changeVariables(env, [valid, invalid], current);
+    assert.equal(typeof result.error, 'string', JSON.stringify(invalid));
+    assert.equal(env.context.stats.gold, 15, 'a later invalid edit prevents earlier edits too');
+  }
+  assert.match(changeVariables(env, [{ ...valid, before: 14 }], current).error, /has changed/);
+  assert.match(changeVariables(env, [valid], { ...current, scene: 'other' }).error, /story has changed/);
+  env.message('editVariables', { ...current, changes: [valid] }, { id: 912, source: {} });
+  env.message('editVariables', { ...current, changes: [valid] }, { id: 913, token: 'wrong' });
+  assert.equal(env.messages.some(message => message.id === 912 || message.id === 913), false);
+  assert.equal(env.context.stats.gold, 15);
+  assert.equal(changeVariables(env, [valid], current).error, undefined);
+  assert.match(changeVariables(env, [{ ...valid, before: 42, value: 99 }], current).error, /story has changed/);
+});
+
+test('failed page capture blocks live edits instead of attaching them to the previous page snapshot', () => {
+  const env = sandbox(); env.run(miniEngine);
+  env.run(`stats.gold=5;stats.scene=new Scene('chapter',stats);stats.scene.printLoop();`); env.flush();
+  const current = liveVariables(env);
+  env.run(`computeCookie=function(){throw new Error('Capture failed');};stats.scene.printLoop();`); env.flush();
+  assert.match(liveVariables(env).error, /Wait for the story page/);
+  assert.match(changeVariables(env, [{ scope: 'stats', name: 'gold', before: 25, value: 42 }], current).error, /Wait for the story page/);
+  env.message('capture', null, { id: 915 });
+  assert.match(env.messages.findLast(message => message.id === 915).payload.error, /not reached a restorable page/);
+  assert.equal(env.context.stats.gold, 25);
+  assert.equal(env.messages.filter(message => message.type === 'snapshot').length, 1);
+});
+
+test('malformed saved live edits cannot change engine fields or partially apply valid entries', () => {
+  const state = { state: { stats: { sceneName: 'chapter', gold: 5 }, temps: {}, lineNum: 0, indent: 0 }, scene: { name: 'chapter' } };
+  for (const liveEdits of [
+    { stats: { gold: 42, sceneName: 'other' } },
+    { stats: { gold: 42 }, arbitrary: { gold: 99 } },
+    { stats: { gold: '42' } },
+  ]) {
+    const env = sandbox({ state: { ...state, liveEdits } }); env.run(miniEngine);
+    env.run('restoreGame(null, null, false);'); env.flush();
+    assert.equal(env.context.stats.gold, 15);
+    assert.equal(env.context.stats.sceneName, 'chapter');
+    assert.ok(env.messages.some(message => /Could not restore live variable edits/.test(message.payload?.message)));
+    assert.equal(env.messages.findLast(message => message.type === 'snapshot').payload.liveEdits, undefined);
+  }
+});
+
+test('live variable edits refresh ordinary choice eligibility and debug predictions without executing story commands', async () => {
+  const env = await referenceEngineSandbox({ stats: { gold: 5, ready: false }, lines: [
+    '*choice', '  *if (ready) #Open gate', '    *set gold +100', '    *abort',
+    '  *selectable_if (ready) #Join guard', '    *abort', '  #Wait', '    *abort',
+  ] });
+  env.run('scene.printLoop();'); env.flush();
+  assert.deepEqual(Array.from(env.context.lastRenderedOptions, option => option.name), ['Join guard', 'Wait']);
+  const before = env.context.scene.lineNum;
+  const result = changeVariables(env, [{ scope: 'stats', name: 'ready', before: false, value: true }]); env.flush();
+  assert.equal(result.error, undefined);
+  assert.equal(result.notice, undefined);
+  assert.deepEqual(Array.from(env.context.lastRenderedOptions, option => [option.name, !!option.unselectable]), [['Open gate', false], ['Join guard', false], ['Wait', false]]);
+  const panel = env.context.document.querySelector('.pathos-choice-debug');
+  assert.match(panel.textContent, /stats.ready = true/);
+  assert.equal(env.context.stats.gold, 5);
+  assert.equal(env.context.scene.lineNum, before);
+  assert.equal(env.context.document.querySelectorAll('form').length, 1);
+});
+
+test('the bundled demo refreshes hidden and disabled options after live variable edits', async () => {
+  const archive = await inspectArchive(await createDemoArchive());
+  const html = new TextDecoder().decode(archive.candidates[0].files.find(file => file.path === 'index.html').data);
+  const { document } = parseHTML(html), env = sandbox({}, document);
+  for (const script of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) env.run(script[1]);
+  env.run('window.__pathosFinishLoading();window.onload();'); env.flush();
+  assert.equal(document.querySelector('button').textContent, 'Climb the tower.');
+  assert.equal([...document.querySelectorAll('button')].some(button => button.textContent === 'Take the cliff path.'), false);
+  const result = changeVariables(env, [
+    { scope: 'stats', name: 'courage', before: 50, value: 65 },
+    { scope: 'stats', name: 'supplies', before: 3, value: 6 },
+  ]); env.flush();
+  assert.equal(result.error, undefined); assert.equal(result.notice, undefined);
+  const buttons = [...document.querySelectorAll('form button')];
+  assert.ok(buttons.some(button => button.textContent === 'Take the cliff path.' && !button.disabled));
+  assert.ok(buttons.some(button => button.textContent === 'Hire a guide.' && !button.disabled));
+  assert.equal(document.querySelectorAll('form').length, 1);
+  assert.equal(env.context.stats.sceneName, 'startup');
+  assert.equal(env.context.stats.courage, 65);
+});
+
+test('editing implicit control flow preserves the rendered menu exit behavior in debug predictions and selection', async () => {
+  for (const initial of [false, true]) {
+    const env = await referenceEngineSandbox({ stats: { gold: 5, implicit_control_flow: initial }, lines: [
+      '*choice', '  #Test', '    A quiet moment.', '  #Sibling', '    *abort', '*set gold +100', '*abort',
+    ] });
+    env.run('scene.printLoop();'); env.flush();
+    const result = changeVariables(env, [{ scope: 'stats', name: 'implicit_control_flow', before: initial, value: !initial }]); env.flush();
+    assert.equal(result.error, undefined);
+    assert.equal(result.notice, undefined);
+    const effects = env.context.document.querySelector('.pathos-choice-effects').textContent;
+    if (initial) assert.match(effects, /stats.gold: 5 → 105/);
+    else assert.doesNotMatch(effects, /stats.gold|105/);
+    env.context.document.querySelector('[aria-label="Choose Test"]').click(); env.flush();
+    assert.equal(env.context.stats.gold, initial ? 105 : 5);
+    assert.equal(env.messages.some(message => /illegal to fall out/.test(message.payload?.message)), !initial);
+  }
 });
 
 test('snapshots describe the visible story page and stats cannot replace its preview', () => {

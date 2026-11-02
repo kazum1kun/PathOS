@@ -2,8 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { assessCompatibility, cloneEditedSave, migrateSave, restartFromCheckpoint, validateSaveRecord } from '../src/compatibility.js';
+import { assessCompatibility, cloneEditedSave, compactSaveRecord, migrateSave, restartFromCheckpoint, validateSaveRecord } from '../src/compatibility.js';
 import { inspectArchive } from '../src/importer.js';
+import { encodeSave, readSaveFile } from '../src/transfer.js';
 
 function referenceScene(declarations) {
   const context = vm.createContext({ console });
@@ -209,6 +210,65 @@ test('edit produces a new save without mutating the original', () => {
   const edited = cloneEditedSave(record, { stats: { strength: 50 }, temps: { visited: true } });
   assert.equal(edited.kind, 'edited'); assert.equal(edited.snapshot.state.stats.strength, 50);
   assert.equal(edited.snapshot.state.temps.visited, true); assert.deepEqual(record, original);
+});
+
+test('live edits preserve variables created during page replay and round-trip through compressed saves', async () => {
+  const record = save();
+  record.snapshot.liveEdits = { stats: { strength: 42, name: 'New name' }, temps: { visited: true, newly_created: 3 } };
+  const original = structuredClone(record);
+  assert.doesNotThrow(() => validateSaveRecord(record));
+  assert.deepEqual(compactSaveRecord(record).snapshot.liveEdits, record.snapshot.liveEdits);
+  const encoded = await encodeSave({ save: record });
+  const restored = await readSaveFile(new File([encoded], 'edited.zip'));
+  assert.deepEqual(restored.save.snapshot.liveEdits, record.snapshot.liveEdits);
+  assert.deepEqual(record, original);
+});
+
+test('live edit validation rejects invalid scopes, values and internal variable names', () => {
+  for (const edits of [null, [], { unknown: {} }, { stats: [] }, { stats: null }, { temps: { ready: null } }, { stats: { strength: Infinity } }, { stats: { inventory: [] } }, { stats: { strength: () => 1 } }]) {
+    const record = save(); record.snapshot.liveEdits = edits;
+    assert.throws(() => validateSaveRecord(record), /live variable edits/);
+  }
+  for (const name of ['scene', 'sceneName', 'SCENENAME', 'choice_reuse', 'Choice_random_seed', '_looplimit', 'param', 'PARAM_1', 'constructor', 'Prototype', '__proto__', 'strength.value', 'two words']) {
+    const record = save(); record.snapshot.liveEdits = { stats: { [name]: 1 } };
+    assert.throws(() => validateSaveRecord(record), /internal or invalid variable name/, name);
+  }
+  const record = save(); record.snapshot.checkpoint = { liveEdits: { temps: { choice_reuse: 'hide' } } };
+  assert.throws(() => validateSaveRecord(record), /internal or invalid variable name/);
+});
+
+test('edited copies update overlapping live overrides and preserve other current-page edits', () => {
+  const record = save(); record.snapshot.liveEdits = { stats: { strength: 42, name: 'Current name' }, temps: { visited: true } };
+  const original = structuredClone(record);
+  const edited = cloneEditedSave(record, { stats: { strength: 50 }, temps: { visited: false } });
+  assert.equal(edited.snapshot.state.stats.strength, 50);
+  assert.equal(edited.snapshot.state.temps.visited, false);
+  assert.deepEqual(edited.snapshot.liveEdits, { stats: { strength: 50, name: 'Current name' }, temps: { visited: false } });
+  assert.deepEqual(record, original);
+});
+
+test('compatible migration retains current-page live edits and validates their stat types', () => {
+  const record = save(); record.snapshot.liveEdits = { stats: { strength: '42' }, temps: { created_on_page: true } };
+  const original = structuredClone(record);
+  const migrated = migrateSave(record, version('v2'), version('v1'));
+  assert.deepEqual(migrated.snapshot.liveEdits, record.snapshot.liveEdits);
+  assert.notEqual(migrated.snapshot.liveEdits, record.snapshot.liveEdits);
+  assert.deepEqual(record, original);
+  record.snapshot.liveEdits.stats.strength = 'not a number';
+  assert.deepEqual(assessCompatibility(record, version('v2'), version('v1')).typeChanges, ['strength']);
+  assert.throws(() => migrateSave(record, version('v2'), version('v1')), /changed variable types/);
+});
+
+test('chapter restarts discard edits belonging to the original current page', () => {
+  const record = withCheckpoint(save());
+  record.snapshot.liveEdits = { stats: { strength: 42 }, temps: { visited: true } };
+  record.snapshot.checkpoint.liveEdits = { stats: { strength: 25 } };
+  const original = structuredClone(record);
+  const restarted = restartFromCheckpoint(record, version('v2'), version('v1'));
+  assert.equal(restarted.snapshot.state.stats.strength, 12);
+  assert.equal(Object.hasOwn(restarted.snapshot, 'liveEdits'), false);
+  assert.equal(Object.hasOwn(restarted.snapshot.checkpoint, 'liveEdits'), false);
+  assert.deepEqual(record, original);
 });
 
 test('invalid and prototype-bearing save state is rejected', () => {

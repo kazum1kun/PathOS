@@ -292,7 +292,7 @@ async function launch(game,version,save) {
     if(runtime)await leavePlayer();
     const current={game,version,runId:uid(),lastFingerprint:save?saveFingerprint(save.snapshot,save.storage):'',lastChangeFingerprint:save?saveFingerprint(save.snapshot,save.storage,true):''};session=current;storage=copy(save?.storage||{});
     $('#player').hidden=false;$('#playing-title').textContent=game.title;$('#playing-version').textContent=version.label;$('#save-status').textContent='Opening…';$('#runtime-status').hidden=true;$('#save-now').disabled=true;
-    $('#debug-choices').disabled=true;$('#debug-choices').setAttribute('aria-pressed',String(debugChoices));
+    $('#play-variables').disabled=true;$('#debug-choices').disabled=true;$('#debug-choices').setAttribute('aria-pressed',String(debugChoices));
     document.body.style.overflow='hidden';
     runtime=await createRuntime({container:$('#runtime'),version,storage,state:save?.snapshot,debugMode:debugChoices,appearanceCSS:currentReaderStyles(),
       onStorage:value=>{if(session!==current)return;const changed=JSON.stringify(storage)!==JSON.stringify(value);storage=value;if(changed&&current.latestSnapshot)scheduleAutosave(current,current.latestSnapshot);},
@@ -300,7 +300,7 @@ async function launch(game,version,save) {
       onStatus:status=>{
         if(session!==current)return;
         if(status.level==='error'){$('#runtime-status').textContent=status.message;$('#runtime-status').hidden=false;$('#save-status').textContent='Runtime needs attention';}
-        if(status.level==='ready'){$('#save-now').disabled=false;$('#debug-choices').disabled=false;$('#save-status').textContent=settings.autosaveLimit?'Autosave ready':'Autosave off';}
+        if(status.level==='ready'){$('#save-now').disabled=false;$('#play-variables').disabled=false;$('#debug-choices').disabled=false;$('#save-status').textContent=settings.autosaveLimit?'Autosave ready':'Autosave off';}
       }
     });
   }catch(error){await leavePlayer(false);throw error;}
@@ -315,9 +315,10 @@ function saveFingerprint(snapshot,values={},ignorePosition=false) {
   if(ignorePosition){delete state.lineNum;delete state.indent;}
   if(state.temps)delete state.temps.choice_user_restored;
   const meaningfulStorage=Object.fromEntries(Object.entries(values).filter(([key])=>!/^persist:.*:(?:state|statetemp|statebackup)$/.test(key)));
+  const liveEdits=Object.fromEntries(Object.entries(snapshot.liveEdits||{}).filter(([,scope])=>Object.keys(scope).length));
   // Key order can change through native JSON storage. Metadata such as capture
   // time, previews and recovery checkpoints doesn't constitute new progress.
-  return JSON.stringify({state,storage:meaningfulStorage},(_,value)=>value&&typeof value==='object'&&!Array.isArray(value)?Object.fromEntries(Object.keys(value).sort().map(key=>[key,value[key]])):value);
+  return JSON.stringify({state,storage:meaningfulStorage,...(Object.keys(liveEdits).length?{liveEdits}:{})},(_,value)=>value&&typeof value==='object'&&!Array.isArray(value)?Object.fromEntries(Object.keys(value).sort().map(key=>[key,value[key]])):value);
 }
 function scheduleAutosave(current,snapshot){
   clearTimeout(autoTimer);
@@ -350,6 +351,7 @@ async function flush() {
 async function leavePlayer(capture=true) {
   if(capture)await flush();
   clearTimeout(autoTimer);runtime?.dispose();runtime=null;session=null;
+  $('#play-variables').disabled=true;
   closeMenus();
   $('#player').hidden=true;$('#runtime').replaceChildren();document.body.style.overflow='';await refresh();
 }
@@ -363,19 +365,94 @@ async function toggleChoiceDebug() {
   }catch(error){if(session===current){$('#runtime-status').textContent=error.message;$('#runtime-status').hidden=false;}}
   finally{if(session===current)button.disabled=false;}
 }
+async function openLiveVariables() {
+  const player=runtime,current=session;if(!player||!current)return;
+  const trigger=$('#play-variables');trigger.disabled=true;closeMenus(true);
+  try{
+    const view=await player.getVariables();
+    if(session!==current||runtime!==player)return;
+    const variables=[...view.variables].sort((a,b)=>a.scope.localeCompare(b.scope)||a.name.localeCompare(b.name));
+    const rows=scope=>variables.map((variable,index)=>{
+      if(variable.scope!==scope)return '';
+      const {name,type,value}=variable,id='live-var-'+index;
+      const input=type==='boolean'?`<select id="${id}" data-live-variable="${index}"><option value="true" ${value===true?'selected':''}>true</option><option value="false" ${value===false?'selected':''}>false</option></select>`:`<input id="${id}" data-live-variable="${index}" type="${type==='number'?'number':'text'}" ${type==='number'?'step="any" inputmode="decimal"':''} spellcheck="false" value="${esc(value)}">`;
+      return `<div class="variable-row live-variable-row" data-live-row="${index}" data-live-name="${esc(name)}" data-live-scope="${scope}"><label for="${id}">${esc(name)}<small>${type}</small></label>${input}</div>`;
+    }).join('');
+    modal(`<div id="live-variables-editor"><h2>Variables</h2><p>Current scene: <strong>${esc(view.scene)}</strong>. Apply changes to edit this playthrough. Continue the story to see updated text.</p><div class="form-row"><label for="live-variable-search">Search variables</label><input id="live-variable-search" type="search" placeholder="Variable name" autocomplete="off"></div><div class="live-variable-list">${['stats','temps'].map(scope=>`<fieldset class="live-variable-group" data-live-group="${scope}"><legend>${scope==='stats'?'Persistent stats':'Scene variables'}</legend><div class="variable-grid">${rows(scope)||'<p>No editable variables in this scope.</p>'}</div></fieldset>`).join('')}<p id="live-variable-empty" hidden>No variables match your search.</p></div><small id="live-variable-count" role="status" aria-live="polite"></small><div class="modal-error" id="live-variable-error" role="alert"></div><div class="modal-actions"><button id="live-variable-reload">Reload values</button><button data-close>Cancel</button><button id="live-variable-apply" class="primary" disabled>Apply changes</button></div></div>`,()=>{
+      const editor=$('#live-variables-editor'),apply=$('#live-variable-apply'),error=$('#live-variable-error');
+      const controls=[...editor.querySelectorAll('[data-live-variable]')];
+      let applying=false;
+      const dirty=control=>{
+        const variable=variables[Number(control.dataset.liveVariable)];
+        return variable.type==='number'?control.value.trim()===''||Number(control.value)!==variable.value:variable.type==='boolean'?(control.value==='true')!==variable.value:control.value!==variable.value;
+      };
+      function update(){
+        const search=$('#live-variable-search').value.trim().toLowerCase();let visible=0,changed=0;
+        for(const control of controls){
+          const variable=variables[Number(control.dataset.liveVariable)],row=control.closest('[data-live-row]'),edited=dirty(control);
+          row.hidden=!variable.name.toLowerCase().includes(search);row.classList.toggle('is-dirty',edited);
+          if(!row.hidden)visible++;if(edited)changed++;
+        }
+        for(const group of editor.querySelectorAll('[data-live-group]'))group.hidden=!!search&&![...group.querySelectorAll('[data-live-row]')].some(row=>!row.hidden);
+        $('#live-variable-empty').hidden=!search||visible>0;
+        $('#live-variable-count').textContent=`${visible} of ${plural(variables.length,'variable')} · ${changed} changed`;
+        apply.disabled=applying||changed===0;
+      }
+      $('#live-variable-search').oninput=update;
+      const reload=$('#live-variable-reload');
+      reload.onclick=async()=>{reload.disabled=true;try{await openLiveVariables();}finally{if(reload.isConnected)reload.disabled=false;}};
+      for(const control of controls){control.oninput=update;control.onchange=update;}
+      apply.onclick=async()=>{
+        error.textContent='';
+        try{
+          const changes=controls.filter(dirty).map(control=>{
+            const variable=variables[Number(control.dataset.liveVariable)];
+            const value=variable.type==='number'?Number(control.value):variable.type==='boolean'?control.value==='true':control.value;
+            if(variable.type==='number'&&(control.value.trim()===''||!Number.isFinite(value)))throw new Error('Enter a valid number for '+variable.name+'.');
+            return {scope:variable.scope,name:variable.name,before:variable.value,value};
+          });
+          if(!changes.length)return;
+          applying=true;apply.disabled=true;reload.disabled=true;controls.forEach(control=>{control.disabled=true;});
+          const result=await player.editVariables({scene:view.scene,revision:view.revision,changes});
+          if(session!==current||runtime!==player)return;
+          if(result.snapshot){current.latestSnapshot=result.snapshot;scheduleAutosave(current,result.snapshot);}
+          if(editor.isConnected){
+            $('#modal').close();$('#save-status').textContent=settings.autosaveLimit?'Variables updated · autosave pending':'Variables updated · autosave off';
+            if(result.notice){$('#runtime-status').textContent=result.notice;$('#runtime-status').hidden=false;}
+          }
+        }catch(e){if(editor.isConnected&&session===current)error.textContent=e.message;}
+        finally{applying=false;if(editor.isConnected){reload.disabled=false;controls.forEach(control=>{control.disabled=false;});update();}}
+      };
+      update();
+    });
+  }catch(error){if(session===current){
+    const inline=$('#modal').open&&$('#live-variable-error');
+    if(inline)inline.textContent=error.message;else{$('#runtime-status').textContent=error.message;$('#runtime-status').hidden=false;}
+  }}
+  finally{if(session===current)trigger.disabled=false;}
+}
 function manualSave() {
   if(!runtime)return;
   modal(`<h2>Keep this moment</h2><p>Named snapshots are kept until you delete them, separately from automatic saves.</p><div class="form-row"><label for="save-name">Snapshot name</label><input id="save-name" maxlength="160" value="${esc('My path · '+new Date().toLocaleDateString())}"></div><div class="modal-error" id="save-error"></div><div class="modal-actions"><button data-close>Cancel</button><button id="save-confirm" class="primary">Save snapshot</button></div>`,()=>{$('#save-confirm').onclick=async()=>{try{await enqueueSave(await runtime.capture(),'manual',$('#save-name').value.trim()||'Named snapshot');$('#modal').close();}catch(e){$('#save-error').textContent=e.message;}};});
 }
 function openEditor(save) {
   const edited=copy(save.snapshot.state);
+  for(const scope of ['stats','temps'])Object.assign(edited[scope],copy(save.snapshot.liveEdits?.[scope]||{}));
   const variables=Object.entries(edited.stats).filter(([key,value])=>!key.startsWith('choice_')&&['number','string','boolean'].includes(typeof value));
   modal(`<h2>Edit a copy</h2><p>Change character variables or inspect the full state. Your changes are saved as a copy. Snapshots replay from the start of a page, so that page’s story commands may still change the values you edit.</p><div class="form-row"><label for="edit-name">Copy name</label><input id="edit-name" maxlength="160" value="${esc(save.name+' (edited)')}"></div><div class="tabs"><button id="vars-tab" class="tab active">Variables</button><button id="json-tab" class="tab">Raw state</button></div><div id="vars-panel" class="variable-grid">${variables.map(([key,value],i)=>`<div class="variable-row"><label for="var-${i}">${esc(key)}</label>${typeof value==='boolean'?`<select id="var-${i}" data-variable="${esc(key)}" data-type="boolean"><option ${value?'selected':''} value="true">true</option><option ${!value?'selected':''} value="false">false</option></select>`:`<input id="var-${i}" data-variable="${esc(key)}" data-type="${typeof value}" type="${typeof value==='number'?'number':'text'}" step="any" value="${esc(value)}">`}</div>`).join('')||'<p>This save has no editable character variables.</p>'}</div><div id="json-panel" hidden><label for="state-json" class="sr-only">Raw ChoiceScript state JSON</label><textarea id="state-json" spellcheck="false"></textarea><p>Scene and line fields are engine internals. Incorrect values can break this copy.</p></div><div class="modal-error" id="edit-error"></div><div class="modal-actions"><button data-close>Cancel</button><button id="edit-confirm" class="primary">Save edited copy</button></div>`,()=>{
     let raw=false;$('#state-json').value=JSON.stringify(edited,null,2);
     function syncVars(){for(const el of $('#vars-panel').querySelectorAll('[data-variable]')){const value=el.dataset.type==='number'?Number(el.value):el.dataset.type==='boolean'?el.value==='true':el.value;if(typeof value==='number'&&(!Number.isFinite(value)||el.value.trim()===''))throw new Error('Enter a valid number for '+el.dataset.variable);edited.stats[el.dataset.variable]=value;}}
     $('#json-tab').onclick=()=>{try{syncVars();$('#state-json').value=JSON.stringify(edited,null,2);raw=true;$('#vars-panel').hidden=true;$('#json-panel').hidden=false;$('#json-tab').classList.add('active');$('#vars-tab').classList.remove('active');}catch(e){$('#edit-error').textContent=e.message;}};
     $('#vars-tab').onclick=()=>{if(raw){$('#edit-error').textContent='Raw state edits can’t be shown as variables. Save the copy, or close and reopen the editor to start over.';} };
-    $('#edit-confirm').onclick=async()=>{try{const record=cloneEditedSave(save,{},$('#edit-name').value.trim()||save.name+' (edited)');if(raw)record.snapshot.state=JSON.parse($('#state-json').value);else{syncVars();record.snapshot.state=edited;}await db.putSave(record);$('#modal').close();await refresh();notify('Saved an edited copy. The original snapshot is still available.');}catch(e){$('#edit-error').textContent=e.message;}};
+    $('#edit-confirm').onclick=async()=>{try{
+      if(!raw)syncVars();const state=raw?JSON.parse($('#state-json').value):edited;
+      const record=cloneEditedSave(save,{stats:state.stats,temps:state.temps},$('#edit-name').value.trim()||save.name+' (edited)');record.snapshot.state=state;
+      if(raw&&record.snapshot.liveEdits){
+        if(state.lineNum!==save.snapshot.state.lineNum||state.indent!==save.snapshot.state.indent||state.stats?.sceneName!==save.snapshot.state.stats.sceneName)delete record.snapshot.liveEdits;
+        else for(const scope of ['stats','temps'])for(const key of Object.keys(record.snapshot.liveEdits[scope]||{}))if(!Object.hasOwn(state[scope]||{},key))delete record.snapshot.liveEdits[scope][key];
+      }
+      await db.putSave(record);$('#modal').close();await refresh();notify('Saved an edited copy. The original snapshot is still available.');
+    }catch(e){$('#edit-error').textContent=e.message;}};
   });
 }
 
@@ -451,6 +528,7 @@ $('#backup-file').onchange=async event=>{const file=event.target.files[0];event.
 }catch(e){report(e);}};
 $('#search').oninput=render;$('#help').onclick=help;$('#save-now').onclick=manualSave;
 $('#debug-choices').onclick=toggleChoiceDebug;
+$('#play-variables').onclick=openLiveVariables;
 $('#settings').onclick=openSettings;$('#reader-settings').onclick=openSettings;
 for(const [triggerId,panelId] of disclosures)$('#'+triggerId).onclick=()=>toggleMenu(triggerId,panelId);
 $('#main-menu').addEventListener('click',event=>{

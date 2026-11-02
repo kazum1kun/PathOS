@@ -9,6 +9,18 @@ export function validateTimestamp(value, label = 'The record') {
   }
 }
 
+function validateLiveEdits(edits) {
+  if (!isObject(edits) || Object.keys(edits).some(scope => scope !== 'stats' && scope !== 'temps')) throw new Error('The saved live variable edits are invalid.');
+  for (const scope of ['stats', 'temps']) {
+    if (!own(edits, scope)) continue;
+    if (!isObject(edits[scope])) throw new Error('The saved live variable edits must contain variable maps.');
+    for (const [name, value] of Object.entries(edits[scope])) {
+      if (!/^[a-z][a-z0-9_]*$/i.test(name) || /^(?:_|choice_|scene$|scenename$|constructor$|prototype$|param(?:_|$))/i.test(name)) throw new Error('The saved live variable edits contain an internal or invalid variable name.');
+      if (!['string', 'number', 'boolean'].includes(typeof value) || typeof value === 'number' && !Number.isFinite(value)) throw new Error('The saved live variable edits must contain text, finite numbers, or booleans.');
+    }
+  }
+}
+
 export function validateSaveRecord(save) {
   if (!isObject(save)) throw new Error('The save must be an object.');
   for (const field of ['id', 'gameId', 'versionId']) {
@@ -33,6 +45,8 @@ export function validateSaveRecord(save) {
     if (state.lineNum > save.snapshot.scene.lines.length) throw new Error('The saved line number is outside its scene source.');
   }
   if (save.snapshot.scene.lineCount !== undefined && (!Number.isInteger(save.snapshot.scene.lineCount) || save.snapshot.scene.lineCount < 0 || state.lineNum > save.snapshot.scene.lineCount)) throw new Error('The saved line number is outside its scene source.');
+  if (save.snapshot.liveEdits !== undefined) validateLiveEdits(save.snapshot.liveEdits);
+  if (save.snapshot.checkpoint?.liveEdits !== undefined) validateLiveEdits(save.snapshot.checkpoint.liveEdits);
   if (save.storage !== undefined && !isObject(save.storage)) throw new Error('The saved storage is invalid.');
   assertJSONValue(save);
   return save;
@@ -242,7 +256,8 @@ export function assessCompatibility(save, targetVersion, sourceVersion) {
   const initial = targetVersion.initialStats ?? {};
   for (const name of Object.keys(initial)) {
     if (!own(save.snapshot.state.stats, name)) result.newVariables.push(name);
-    else if (!matchesInitialType(save.snapshot.state.stats[name], name, targetVersion, sourceVersion)) result.typeChanges.push(name);
+    const values = [save.snapshot.state.stats, save.snapshot.liveEdits?.stats].filter(scope => own(scope ?? {}, name)).map(scope => scope[name]);
+    if (values.some(value => !matchesInitialType(value, name, targetVersion, sourceVersion))) result.typeChanges.push(name);
   }
   if (result.typeChanges.length) {
     result.status = 'blocked'; result.reason = `The new version changed variable types: ${result.typeChanges.join(', ')}.`; return result;
@@ -293,6 +308,11 @@ export function cloneEditedSave(save, patch = {}, name) {
   const clone = copy(save);
   if (patch.stats) Object.assign(clone.snapshot.state.stats, copy(patch.stats));
   if (patch.temps) Object.assign(clone.snapshot.state.temps, copy(patch.temps));
+  // These overrides run after the saved page is replayed. An existing override
+  // must reflect an edited copy's new value rather than undoing it on resume.
+  for (const scope of ['stats', 'temps']) for (const key of Object.keys(clone.snapshot.liveEdits?.[scope] ?? {})) {
+    if (own(patch[scope] ?? {}, key)) clone.snapshot.liveEdits[scope][key] = copy(patch[scope][key]);
+  }
   clone.id = crypto.randomUUID(); clone.parentSaveId = save.id; clone.kind = 'edited';
   clone.createdAt = new Date().toISOString(); clone.name = name ?? `${save.name || 'Save'} (edited)`;
   validateSaveRecord(clone);
@@ -340,6 +360,9 @@ export function restartFromCheckpoint(save, targetVersion, sourceVersion) {
   restarted.name = `${save.name || 'Save'} (chapter restart)`;
   restarted.storage = {};
   restarted.snapshot = { ...restarted.snapshot, state: checkpoint.state, scene, checkpoint: { state: copy(checkpoint.state), scene: copy(scene), atSceneStart: true } };
+  // A chapter restart replays new source from its checkpoint, not the page on
+  // which the player edited variables in the original saved playthrough.
+  delete restarted.snapshot.liveEdits;
   synchronizeChecksum(restarted.snapshot, targetVersion);
   synchronizeChecksum(restarted.snapshot.checkpoint, targetVersion);
   restarted.migration = { fromVersionId: save.versionId, toVersionId: targetVersion.id, checkpointRestart: true, warnings: ['This replays the chapter with progress captured before its old version ran. Story logic changed by the author may require starting a new game.', 'This chapter-restart copy starts with empty isolated game storage. Built-in save slots and preferences stay in the original-version snapshot.'] };
